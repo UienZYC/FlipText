@@ -1,2 +1,5 @@
 testground/
+releases/
 .vscode/
+*.exe
+*.zip

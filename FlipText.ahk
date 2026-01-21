@@ -1,6 +1,8 @@
 #Requires AutoHotkey v2.0
 Persistent
 
+; 坐标模式设置为屏幕坐标
+CoordMode "Mouse", "Screen"
 
 ; 全局状态管理
 global G_STATE := { 
@@ -16,11 +18,10 @@ global TransGui := ""
 F1::
 {
     global TransGui 
-    
-    if CaretGetPos(&cx, &cy)
-        G_STATE.X := cx, G_STATE.Y := cy + 25 
-    else
-        MouseGetPos(&mx, &my), G_STATE.X := mx + 15, G_STATE.Y := my + 15
+
+    MouseGetPos(&mx, &my) 
+    G_STATE.X := mx + 15
+    G_STATE.Y := my + 15
 
     originalClipboard := ClipboardAll()
     A_Clipboard := ""

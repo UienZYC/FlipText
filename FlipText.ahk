@@ -53,6 +53,10 @@ F1::
     }
     
     if (targetText == "") {
+        ; 提示用户获取失败
+        ToolTip "Failed to get text automatically, please select text first."
+        ; 设置一个定时器，1秒后自动关闭这个提示
+        SetTimer () => ToolTip(), -1000 
         return
     }
 

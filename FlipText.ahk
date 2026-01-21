@@ -23,25 +23,24 @@ F1::
     G_STATE.X := mx + 15
     G_STATE.Y := my + 15
 
-    originalClipboard := ClipboardAll()
-    A_Clipboard := ""
+    originalClipboard := ClipboardAll() ; 备份剪贴板
+    A_Clipboard := ""                   ; 清空剪贴板
     G_STATE.IsMoved := false 
     
     targetText := ""
     try {
         Send "^c"
-        if !ClipWait(0.15) {
+        if !ClipWait(0.15) {    ; 如果在0.15s内没有直接复制到内容，说明当前没有选区
             G_STATE.Mode := "Line"
-            
-            ; 使用 vkE8 防误触，且不抢焦点
-            Send "{vkE8}" 
-            
-            BlockInput(true)
+            Send "{vkE8}"       ; 使用 vkE8 防误触，不抢焦点
+            BlockInput(true)    ; 开启输入阻塞 
+            ; 选中整行
             Send "{End}+{Home}" 
+            Sleep 15            ; 关键等待
             Send "^c"
-            ClipWait(0.3) 
+            ClipWait(0.15)      ; 0.15s是测试得到的比较合适的时间
             Send "{Right}" 
-            BlockInput(false)
+            BlockInput(false)   ; 关闭输入阻塞
         } else {
             G_STATE.Mode := "Select"
         }

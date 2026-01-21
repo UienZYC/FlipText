@@ -30,16 +30,20 @@ F1::
     targetText := ""
     try {
         Send "^c"
+        ; SendEvent "^c"
         if !ClipWait(0.15) {    ; 如果在0.15s内没有直接复制到内容，说明当前没有选区
             G_STATE.Mode := "Line"
             Send "{vkE8}"       ; 使用 vkE8 防误触，不抢焦点
             BlockInput(true)    ; 开启输入阻塞 
             ; 选中整行
-            Send "{End}+{Home}" 
-            Sleep 15            ; 关键等待
+            Send "{End}"
+            Sleep 15
+            Send "+{Home}" 
+            
+            Sleep 50            ; 关键等待
             Send "^c"
             ClipWait(0.15)      ; 0.15s是测试得到的比较合适的时间
-            Send "{Right}" 
+            Send "{End}"        ; 不使用right是因为可能会跳到下一行
             BlockInput(false)   ; 关闭输入阻塞
         } else {
             G_STATE.Mode := "Select"
@@ -108,8 +112,7 @@ UpdateTransGui(newStr) {
     WinSetTransparent(200, TransGui)
 }
 
-
-; 核心修复：DoReplace 稳定性增强
+; 替换
 DoReplace(*) {
     global G_STATE
     res := G_STATE.Result
@@ -144,13 +147,13 @@ DoReplace(*) {
         ; 选中行
         SendEvent "{End}+{Home}" 
         
-        ; 【关键修复 A】选中后强制等待 200ms，等待编辑器高亮渲染完成
+        ; 选中后强制等待200ms，等待编辑器高亮渲染完成
         Sleep 200 
         
         ; 粘贴
         SendEvent "^v"           
         
-        ; 【关键修复 B】粘贴后强制等待 300ms，确保编辑器读取完剪贴板
+        ; 粘贴后强制等待300ms，确保编辑器读取完剪贴板
         Sleep 300 
         
         BlockInput(false)
@@ -188,7 +191,17 @@ EdgeTranslate(text) {
     url := "https://api-edge.cognitive.microsofttranslator.com/translate?from=" from "&to=" to "&api-version=3.0"
     whr.Open("POST", url, false)
     whr.SetRequestHeader("Authorization", "Bearer " token), whr.SetRequestHeader("Content-Type", "application/json")
-    whr.Send('[{"Text":"' StrReplace(StrReplace(text, '"', '\"'), '`n', '\n') '"}]')
+
+    ; whr.Send('[{"Text":"' StrReplace(StrReplace(text, '"', '\"'), '`n', '\n') '"}]')
+
+    cleanText := StrReplace(text, "\", "\\")        ; 1. 先把 \ 变成 \\
+    cleanText := StrReplace(cleanText, '"', '\"')   ; 2. 再把 " 变成 \" 注: 中文引号不需转义
+    cleanText := StrReplace(cleanText, "`r", "")    ; 3. 去掉回车符
+    cleanText := StrReplace(cleanText, "`n", "\n")  ; 4. 换行符转义 
+
+    body := '[{"Text":"' cleanText '"}]'
+    whr.Send(body)
+
     if RegExMatch(whr.ResponseText, '"text":"(.*?)"', &m)
         return JSON_Unescape(m[1])
     return "Error"

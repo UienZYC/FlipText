@@ -202,7 +202,11 @@ EdgeTranslate(text) {
     body := '[{"Text":"' cleanText '"}]'
     whr.Send(body)
 
-    if RegExMatch(whr.ResponseText, '"text":"(.*?)"', &m)
+    ; 【修改后】支持转义字符的健壮正则
+    ; 解释：((?:[^"\\]|\\.)*)
+    ; [^"\\]  匹配除了 引号 和 反斜杠 以外的字符
+    ; |\\.    或者匹配 一个反斜杠加任意字符 (即跳过转义序列)
+    if RegExMatch(whr.ResponseText, '"text":"((?:[^"\\]|\\.)*)"', &m)
         return JSON_Unescape(m[1])
     return "Error"
 }

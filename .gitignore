@@ -3,3 +3,10 @@ releases/
 .vscode/
 *.exe
 *.zip
+.venv/
+.uv-cache/
+__pycache__/
+FlipText.ini
+FlipText.log
+llm_result.json
+llm_test.txt

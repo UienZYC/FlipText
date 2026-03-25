@@ -65,3 +65,49 @@
 <p align="left">
   Co-authored with LLMs
 </p>
+
+## LLM Translation Config
+FlipText now supports an optional OpenAI-compatible LLM translation engine in addition to the existing Edge-based translation flow.
+
+Configuration lives in `FlipText.ini` beside the script or compiled executable.
+
+Example:
+
+```ini
+[General]
+engine=edge
+active_profile=default
+
+[LLM.default]
+enabled=false
+base_url=
+api_key=
+model=
+timeout_ms=15000
+system_prompt=You are a professional translator. Translate the user's text accurately and naturally. Return only the translated text. Preserve line breaks, formatting, and tone. Do not add explanations, quotation marks, notes, or extra text.
+
+[LLM.second]
+enabled=true
+base_url=
+api_key=
+model=
+timeout_ms=15000
+system_prompt=You are a professional translator. Translate the user's text accurately and naturally. Return only the translated text. Preserve line breaks, formatting, and tone. Do not add explanations, quotation marks, notes, or extra text.
+```
+
+Notes:
+- Set `engine=llm` to make `F1` use the LLM backend.
+- Set `active_profile` to choose which `[LLM.profile_name]` section is active.
+- If the LLM config is incomplete or the request fails, FlipText automatically falls back to the original Edge translation.
+- The tray menu also lets you switch between `Edge` and `LLM`, switch among configured LLM profiles, reload config, and open the config file quickly.
+
+## Python LLM Bridge
+The LLM path now uses a Python helper, while AutoHotkey still handles hotkeys, popup UI, replacement, and Edge fallback.
+
+One-time local setup:
+
+```powershell
+uv sync
+```
+
+After that, run `FlipText.ahk` as usual. When `engine=llm`, the script calls the Python bridge through `uv run`.

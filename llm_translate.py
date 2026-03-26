@@ -4,6 +4,7 @@ import argparse
 import json
 import re
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -29,7 +30,7 @@ def main() -> int:
         write_result(Path(args.result_file), result)
         return 0
     except Exception as exc:
-        log_debug(Path(args.log_file), f"Python LLM translation failed. {exc}")
+        log_exception(Path(args.log_file), "Python LLM translation failed.", exc)
         write_result(
             Path(args.result_file),
             {
@@ -129,6 +130,31 @@ def log_debug(path: Path, message: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(f"{timestamp} {message}\n")
+
+
+def log_exception(path: Path, message: str, exc: BaseException) -> None:
+    details = format_exception_details(exc)
+    log_debug(path, f"{message} {exc}")
+    for line in details.splitlines():
+        log_debug(path, f"  {line}")
+
+
+def format_exception_details(exc: BaseException) -> str:
+    parts = traceback.format_exception(type(exc), exc, exc.__traceback__)
+    cause = exc.__cause__
+    context = exc.__context__ if exc.__cause__ is None else None
+
+    while cause is not None:
+        parts.append("\nCaused by:\n")
+        parts.extend(traceback.format_exception(type(cause), cause, cause.__traceback__))
+        cause = cause.__cause__
+
+    while context is not None:
+        parts.append("\nDuring handling of the above exception, another exception occurred:\n")
+        parts.extend(traceback.format_exception(type(context), context, context.__traceback__))
+        context = context.__context__
+
+    return "".join(parts).rstrip()
 
 
 if __name__ == "__main__":

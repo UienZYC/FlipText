@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -50,9 +51,17 @@ def main() -> int:
         return 1
     except Exception as exc:
         if getattr(args, "result_file", None):
-            Path(args.result_file).write_text(f"ok=0\nerror={str(exc)}\n", encoding="utf-8")
+            result_path = Path(args.result_file)
+            error_log_path = result_path.with_suffix(result_path.suffix + ".error.log")
+            error_log_path.write_text(traceback.format_exc(), encoding="utf-8")
+            result_path.write_text(
+                "ok=0\n"
+                f"error={escape_value(str(exc))}\n"
+                f"error_file={escape_value(str(error_log_path))}\n",
+                encoding="utf-8",
+            )
         else:
-            print(str(exc), file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
         return 1
 
 

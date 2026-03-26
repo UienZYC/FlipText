@@ -7,7 +7,7 @@ import traceback
 from pathlib import Path
 from typing import Any
 
-from config_store import ensure_config, iter_profiles, resolve_profile, save_config, set_active_profile, set_engine
+from config_store import ensure_config, iter_profiles, iter_prompt_presets, resolve_profile, save_config, set_active_profile, set_engine
 
 
 def main() -> int:
@@ -88,6 +88,7 @@ def build_summary(config: dict[str, Any]) -> dict[str, Any]:
         "active_profile_label": active_profile_label,
         "active_timeout_ms": active_timeout_ms,
         "profiles": profiles,
+        "prompt_presets": iter_prompt_presets(config),
     }
 
 
@@ -108,6 +109,18 @@ def encode_summary(summary: dict[str, Any]) -> str:
                     escape_value(profile["label"]),
                     "1" if profile["enabled"] else "0",
                     str(profile["timeout_ms"]),
+                ]
+            )
+        )
+    for preset in summary["prompt_presets"]:
+        lines.append(
+            "prompt_preset="
+            + "|".join(
+                [
+                    escape_value(preset["id"]),
+                    escape_value(preset["shortcut"]),
+                    escape_value(preset["name"]),
+                    escape_value(preset["label"]),
                 ]
             )
         )

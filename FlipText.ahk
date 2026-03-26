@@ -70,33 +70,23 @@ F1::
     }
 
     ClearPopup()
-    StartTranslation(targetText)
+    action := WaitForPromptAction()
+    if !IsObject(action)
+        return
+
+    StartPromptAction(targetText, action)
 }
 
-StartTranslation(text) {
+StartPromptAction(text, action) {
     summary := LoadConfigSummary()
 
     try {
-        if (summary.engine = "llm" && summary.active_profile_id != "") {
-            StartLoadingState(summary.active_profile_label, summary.active_timeout_ms)
-
-            try {
-                result := PythonTranslate(text, summary.active_profile_id)
-                StopLoadingState()
-                G_STATE.Result := result["text"]
-                G_STATE.Source := result["source"]
-            } catch as err {
-                StopLoadingState()
-                LogDebug("LLM translation failed. " err.Message)
-                G_STATE.Result := EdgeTranslate(text)
-                fallbackLabel := (summary.active_profile_label != "") ? summary.active_profile_label : "LLM"
-                G_STATE.Source := "Edge fallback: " fallbackLabel
-            }
-        } else {
-            G_STATE.LastDurationMs := 0
-            G_STATE.Result := EdgeTranslate(text)
-            G_STATE.Source := "Edge"
-        }
+        if (action.type = "translation")
+            RunTranslationAction(text, summary)
+        else if (action.type = "preset")
+            RunPresetAction(text, summary, action)
+        else
+            throw Error("Unknown action type: " action.type)
 
         keys := ["~LButton","~Up","~Down","~Left","~Right","~BS","~Del","~Enter","~NumpadEnter"]
         for k in keys
@@ -107,10 +97,49 @@ StartTranslation(text) {
 
         UpdateTransGui(G_STATE.Result)
     } catch as err {
-        LogDebug("Translation Error. " err.Message)
-        UpdateTransGui("Translation Error")
+        LogDebug("Prompt action error. " err.Message)
+        UpdateTransGui("Prompt Error")
         SetTimer(ClearUI, -2000)
     }
+}
+
+RunTranslationAction(text, summary) {
+    if (summary.engine = "llm" && summary.active_profile_id != "") {
+        StartLoadingState(summary.active_profile_label, summary.active_timeout_ms)
+
+        try {
+            result := PythonTranslate(text, summary.active_profile_id)
+            StopLoadingState()
+            G_STATE.Result := result["text"]
+            G_STATE.Source := result["source"]
+        } catch as err {
+            StopLoadingState()
+            LogDebug("LLM translation failed. " err.Message)
+            G_STATE.Result := EdgeTranslate(text)
+            fallbackLabel := (summary.active_profile_label != "") ? summary.active_profile_label : "LLM"
+            G_STATE.Source := "Edge fallback: " fallbackLabel
+        }
+    } else {
+        G_STATE.LastDurationMs := 0
+        G_STATE.Result := EdgeTranslate(text)
+        G_STATE.Source := "Edge"
+    }
+}
+
+RunPresetAction(text, summary, action) {
+    if (summary.active_profile_id = "")
+        throw Error("No active LLM profile is configured for prompt presets.")
+
+    StartLoadingState(action.name, summary.active_timeout_ms)
+    try {
+        result := PythonTranslate(text, summary.active_profile_id, action.id)
+    } catch as err {
+        StopLoadingState()
+        throw err
+    }
+    StopLoadingState()
+    G_STATE.Result := result["text"]
+    G_STATE.Source := result["source"]
 }
 
 UpdateTransGui(newStr) {
@@ -261,7 +290,7 @@ UpdateLoadingGui() {
     if (remainingMs < 0)
         remainingMs := 0
 
-    text := "Translating with LLM... " FormatSeconds(remainingMs) " left"
+    text := "Running with LLM... " FormatSeconds(remainingMs) " left"
     if (elapsedMs > 0)
         text .= " | " FormatDuration(elapsedMs) " elapsed"
 
@@ -269,7 +298,7 @@ UpdateLoadingGui() {
         TransBodyCtrl.Text := text
 }
 
-PythonTranslate(text, profileId) {
+PythonTranslate(text, profileId, presetId := "") {
     tempDir := A_Temp "\FlipText"
     if !DirExist(tempDir)
         DirCreate(tempDir)
@@ -282,6 +311,7 @@ PythonTranslate(text, profileId) {
     FileAppend(text, inputPath, "UTF-8")
 
     args := "--profile-id " QuoteArg(profileId)
+        . (presetId != "" ? " --preset-id " QuoteArg(presetId) : "")
         . " --text-file " QuoteArg(inputPath)
         . " --result-file " QuoteArg(outputPath)
         . " --log-file " QuoteArg(LOG_PATH)
@@ -459,7 +489,8 @@ DefaultSummary() {
         active_profile_id: "",
         active_profile_label: "",
         active_timeout_ms: 30000,
-        profiles: []
+        profiles: [],
+        prompt_presets: []
     }
 }
 
@@ -500,6 +531,16 @@ ParseSummaryText(text) {
                     label: UnescapeSummaryValue(parts[2]),
                     enabled: (parts[3] = "1"),
                     timeout_ms: IntegerOrDefault(parts[4], 30000)
+                })
+            }
+        } else if (key = "prompt_preset") {
+            parts := SplitEscapedProfile(value)
+            if (parts.Length >= 4) {
+                summary.prompt_presets.Push({
+                    id: UnescapeSummaryValue(parts[1]),
+                    shortcut: UnescapeSummaryValue(parts[2]),
+                    name: UnescapeSummaryValue(parts[3]),
+                    label: UnescapeSummaryValue(parts[4])
                 })
             }
         }
@@ -555,6 +596,51 @@ GetSummaryProfiles(summary) {
     try return summary.profiles
     catch
         return []
+}
+
+GetPromptPresets(summary) {
+    try return summary.prompt_presets
+    catch
+        return []
+}
+
+WaitForPromptAction() {
+    summary := LoadConfigSummary()
+    ToolTip BuildPromptActionHint(summary)
+
+    ih := InputHook("L1 T3")
+    ih.Start()
+    ih.Wait()
+
+    SetTimer () => ToolTip(), -10
+
+    key := StrLower(ih.Input)
+    if (key = "") {
+        ToolTip "Prompt action cancelled"
+        SetTimer () => ToolTip(), -1000
+        return ""
+    }
+
+    if (key = "1")
+        return { type: "translation", key: key, name: "Translate" }
+
+    for _, preset in GetPromptPresets(summary) {
+        if (preset.shortcut = key)
+            return { type: "preset", id: preset.id, key: key, name: preset.name }
+    }
+
+    ToolTip "No prompt action mapped to '" key "'"
+    SetTimer () => ToolTip(), -1000
+    return ""
+}
+
+BuildPromptActionHint(summary) {
+    text := "Press 1 for translation"
+    for _, preset in GetPromptPresets(summary) {
+        if (preset.shortcut != "")
+            text .= "`n" preset.shortcut ": " preset.name
+    }
+    return text
 }
 
 RunConfigCli(command, args) {

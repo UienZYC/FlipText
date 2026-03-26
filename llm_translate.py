@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 from openai import OpenAI
 
-from config_store import ensure_config, resolve_profile
+from config_store import DEFAULT_USER_PROMPT_TEMPLATE, ensure_config, resolve_profile, resolve_prompt_preset
 
 
 def main() -> int:
@@ -21,11 +21,12 @@ def main() -> int:
         config = ensure_config(script_dir)
         provider, model = resolve_profile(config, args.profile_id or None)
         text = Path(args.text_file).read_text(encoding="utf-8")
-        translated = translate_text(provider, model, text, Path(args.log_file))
+        preset = resolve_prompt_preset(config, args.preset_id) if args.preset_id else None
+        translated = translate_text(provider, model, text, Path(args.log_file), preset)
         result = {
             "ok": True,
             "text": translated,
-            "source": f"LLM: {provider['name']} / {model['name']}",
+            "source": build_source_label(provider, model, preset),
         }
         write_result(Path(args.result_file), result)
         return 0
@@ -46,20 +47,22 @@ def main() -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile-id", default="")
+    parser.add_argument("--preset-id", default="")
     parser.add_argument("--text-file", required=True)
     parser.add_argument("--result-file", required=True)
     parser.add_argument("--log-file", required=True)
     return parser.parse_args()
 
 
-def translate_text(provider: dict[str, Any], model: dict[str, Any], text: str, log_path: Path) -> str:
+def translate_text(
+    provider: dict[str, Any], model: dict[str, Any], text: str, log_path: Path, preset: dict[str, Any] | None = None
+) -> str:
     if not model.get("enabled", True):
         raise RuntimeError(f"Model '{model['name']}' is disabled.")
     if not provider.get("base_url", "").strip() or not provider.get("api_key", "").strip() or not model.get("name", "").strip():
         raise RuntimeError(f"Provider '{provider['name']}' is incomplete.")
 
     timeout_seconds = model["timeout_ms"] / 1000
-    source_lang, target_lang = detect_direction(text)
     client = OpenAI(
         api_key=provider["api_key"],
         base_url=provider["base_url"],
@@ -77,18 +80,18 @@ def translate_text(provider: dict[str, Any], model: dict[str, Any], text: str, l
         "Python LLM request started. "
         f"provider={provider['name']} "
         f"model={model['name']} "
-        f"from={source_lang} to={target_lang} "
         f"timeout={timeout_seconds}s",
     )
+
+    system_prompt, user_prompt, meta = compose_messages(model, text, preset)
+    log_debug(log_path, meta)
+    log_prompt_composition(log_path, system_prompt, user_prompt)
 
     response = client.chat.completions.create(
         model=model["name"],
         messages=[
-            {"role": "system", "content": model["system_prompt"]},
-            {
-                "role": "user",
-                "content": f"Translate the following text from {source_lang} to {target_lang}.\n\n{text}",
-            },
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
         ],
         temperature=0,
     )
@@ -101,10 +104,29 @@ def translate_text(provider: dict[str, Any], model: dict[str, Any], text: str, l
     return translated
 
 
+def build_source_label(provider: dict[str, Any], model: dict[str, Any], preset: dict[str, Any] | None) -> str:
+    if preset is not None:
+        return f"LLM Prompt: {preset['name']} ({provider['name']} / {model['name']})"
+    return f"LLM: {provider['name']} / {model['name']}"
+
+
 def detect_direction(text: str) -> tuple[str, str]:
     if re.search(r"[\u4e00-\u9fff]", text):
         return "zh", "en"
     return "en", "zh"
+
+
+def compose_messages(model: dict[str, Any], text: str, preset: dict[str, Any] | None) -> tuple[str, str, str]:
+    if preset is not None:
+        system_prompt = str(preset.get("system_prompt", "")).strip()
+        if not system_prompt:
+            raise RuntimeError(f"Prompt preset '{preset['name']}' has an empty system prompt.")
+        return system_prompt, text, f"Prompt preset selected. preset={preset['name']} shortcut={preset['shortcut']}"
+
+    source_lang, target_lang = detect_direction(text)
+    system_prompt = str(model.get("system_prompt", "")).strip()
+    user_prompt = compose_user_prompt(model, text, source_lang, target_lang)
+    return system_prompt, user_prompt, f"Translation direction detected. from={source_lang} to={target_lang}"
 
 
 def extract_content(response: Any) -> str:
@@ -121,6 +143,26 @@ def extract_content(response: Any) -> str:
     return "\n".join(parts)
 
 
+def compose_user_prompt(model: dict[str, Any], text: str, source_lang: str, target_lang: str) -> str:
+    template = str(model.get("user_prompt_template", DEFAULT_USER_PROMPT_TEMPLATE)).strip()
+    if not template:
+        template = DEFAULT_USER_PROMPT_TEMPLATE
+    try:
+        return template.format(source_lang=source_lang, target_lang=target_lang, text=text)
+    except KeyError as exc:
+        name = exc.args[0]
+        raise RuntimeError(
+            "User prompt template contains an unsupported placeholder: "
+            f"{{{name}}}. Supported placeholders are {{source_lang}}, {{target_lang}}, and {{text}}."
+        ) from exc
+
+
+def log_prompt_composition(path: Path, system_prompt: str, user_prompt: str) -> None:
+    log_debug(path, "Prompt composition:")
+    log_multiline(path, "  [system] ", system_prompt)
+    log_multiline(path, "  [user] ", user_prompt)
+
+
 def write_result(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
@@ -130,6 +172,12 @@ def log_debug(path: Path, message: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(f"{timestamp} {message}\n")
+
+
+def log_multiline(path: Path, prefix: str, text: str) -> None:
+    lines = text.splitlines() or [""]
+    for index, line in enumerate(lines, start=1):
+        log_debug(path, f"{prefix}{index:02d}: {line}")
 
 
 def log_exception(path: Path, message: str, exc: BaseException) -> None:

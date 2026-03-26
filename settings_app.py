@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import os
 import tkinter as tk
 from pathlib import Path
@@ -8,9 +7,12 @@ from tkinter import messagebox, ttk
 
 from config_store import (
     DEFAULT_SYSTEM_PROMPT,
+    DEFAULT_USER_PROMPT_TEMPLATE,
+    RESERVED_TRANSLATION_SHORTCUT,
     ensure_config,
     get_config_path,
     make_id,
+    normalize_shortcut,
     save_config,
     set_active_profile,
     set_engine,
@@ -38,12 +40,19 @@ class SettingsApp:
         self.model_name_var = tk.StringVar()
         self.model_enabled_var = tk.BooleanVar(value=True)
         self.timeout_var = tk.StringVar(value="30000")
+        self.preset_name_var = tk.StringVar()
+        self.preset_shortcut_var = tk.StringVar()
         self.status_var = tk.StringVar(value=f"Config: {self.config_path}")
+        self.current_preset_id = ""
 
         self.tree: ttk.Treeview
+        self.preset_list: tk.Listbox
         self.system_prompt_text: tk.Text
+        self.user_prompt_text: tk.Text
+        self.preset_prompt_text: tk.Text
         self.provider_section: ttk.LabelFrame
         self.model_section: ttk.LabelFrame
+        self.preset_section: ttk.LabelFrame
 
         self._build_ui()
         self._refresh_tree()
@@ -106,6 +115,7 @@ class SettingsApp:
         frame.grid(row=0, column=1, sticky="nsew")
         frame.columnconfigure(0, weight=1)
         frame.rowconfigure(1, weight=1)
+        frame.rowconfigure(3, weight=1)
 
         self.provider_section = ttk.LabelFrame(frame, text="Provider", padding=10)
         self.provider_section.grid(row=0, column=0, sticky="ew")
@@ -126,6 +136,7 @@ class SettingsApp:
         self.model_section.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
         self.model_section.columnconfigure(1, weight=1)
         self.model_section.rowconfigure(4, weight=1)
+        self.model_section.rowconfigure(6, weight=1)
 
         ttk.Label(self.model_section, text="Model name").grid(row=0, column=0, sticky="w")
         ttk.Entry(self.model_section, textvariable=self.model_name_var).grid(row=0, column=1, sticky="ew", pady=(0, 6))
@@ -139,11 +150,59 @@ class SettingsApp:
         self.system_prompt_text = tk.Text(self.model_section, height=14, wrap="word")
         self.system_prompt_text.grid(row=4, column=0, columnspan=3, sticky="nsew")
 
+        ttk.Label(self.model_section, text="User prompt template").grid(row=5, column=0, sticky="nw", pady=(8, 0))
+        self.user_prompt_text = tk.Text(self.model_section, height=10, wrap="word")
+        self.user_prompt_text.grid(row=6, column=0, columnspan=3, sticky="nsew")
+
+        template_hint = ttk.Label(
+            self.model_section,
+            text="Supported placeholders: {source_lang}, {target_lang}, {text}",
+        )
+        template_hint.grid(row=7, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
         hint = ttk.Label(
             frame,
             text="Provider and model edits are staged here. Use Save Settings to commit them all.",
         )
         hint.grid(row=2, column=0, sticky="w", pady=(8, 0))
+
+        self._build_prompt_preset_section(frame)
+
+    def _build_prompt_preset_section(self, parent: ttk.Frame) -> None:
+        self.preset_section = ttk.LabelFrame(parent, text="Prompt Presets", padding=10)
+        self.preset_section.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
+        self.preset_section.columnconfigure(0, weight=1)
+        self.preset_section.columnconfigure(2, weight=1)
+        self.preset_section.rowconfigure(3, weight=1)
+
+        self.preset_list = tk.Listbox(self.preset_section, exportselection=False, height=8)
+        self.preset_list.grid(row=0, column=0, rowspan=4, sticky="nsew", padx=(0, 10))
+        self.preset_list.bind("<<ListboxSelect>>", lambda _event: self._on_preset_selected())
+
+        buttons = ttk.Frame(self.preset_section)
+        buttons.grid(row=4, column=0, sticky="ew", padx=(0, 10), pady=(8, 0))
+        ttk.Button(buttons, text="Add Preset", command=self._add_prompt_preset).grid(row=0, column=0, sticky="ew")
+        ttk.Button(buttons, text="Delete Preset", command=self._delete_prompt_preset).grid(
+            row=0, column=1, padx=(8, 0), sticky="ew"
+        )
+
+        ttk.Label(self.preset_section, text="Preset name").grid(row=0, column=1, sticky="w")
+        ttk.Entry(self.preset_section, textvariable=self.preset_name_var).grid(row=0, column=2, sticky="ew", pady=(0, 6))
+
+        ttk.Label(self.preset_section, text="Shortcut after F1").grid(row=1, column=1, sticky="w")
+        ttk.Entry(self.preset_section, textvariable=self.preset_shortcut_var, width=8).grid(
+            row=1, column=2, sticky="w", pady=(0, 6)
+        )
+
+        ttk.Label(self.preset_section, text="System prompt").grid(row=2, column=1, sticky="nw")
+        self.preset_prompt_text = tk.Text(self.preset_section, height=10, wrap="word")
+        self.preset_prompt_text.grid(row=3, column=1, columnspan=2, sticky="nsew")
+
+        hint = ttk.Label(
+            self.preset_section,
+            text="Press F1 then 1 for translation. Assign other single-character shortcuts such as 2 or q to presets.",
+        )
+        hint.grid(row=4, column=1, columnspan=2, sticky="w", pady=(8, 0))
 
     def _save_engine_immediately(self) -> None:
         set_engine(self.config, self.engine_var.get())
@@ -156,6 +215,9 @@ class SettingsApp:
 
     def _providers(self) -> list[dict]:
         return self.config["providers"]
+
+    def _presets(self) -> list[dict]:
+        return self.config["prompt_presets"]
 
     def _selected_provider(self) -> dict | None:
         selection = self.current_selection_id
@@ -212,6 +274,7 @@ class SettingsApp:
             self.current_selection_id = first
 
         self._load_selection_into_form()
+        self._refresh_preset_list()
 
     def _load_selection_into_form(self) -> None:
         provider = self._selected_provider()
@@ -234,6 +297,8 @@ class SettingsApp:
             self.model_enabled_var.set(bool(model.get("enabled", True)))
             self.system_prompt_text.delete("1.0", tk.END)
             self.system_prompt_text.insert("1.0", model.get("system_prompt", DEFAULT_SYSTEM_PROMPT))
+            self.user_prompt_text.delete("1.0", tk.END)
+            self.user_prompt_text.insert("1.0", model.get("user_prompt_template", DEFAULT_USER_PROMPT_TEMPLATE))
 
     def _clear_provider_fields(self) -> None:
         self.provider_name_var.set("")
@@ -246,6 +311,21 @@ class SettingsApp:
         self.model_enabled_var.set(True)
         self.system_prompt_text.delete("1.0", tk.END)
         self.system_prompt_text.insert("1.0", DEFAULT_SYSTEM_PROMPT)
+        self.user_prompt_text.delete("1.0", tk.END)
+        self.user_prompt_text.insert("1.0", DEFAULT_USER_PROMPT_TEMPLATE)
+
+    def _clear_preset_fields(self) -> None:
+        self.preset_name_var.set("")
+        self.preset_shortcut_var.set("")
+        self.preset_prompt_text.delete("1.0", tk.END)
+
+    def _selected_preset(self) -> dict | None:
+        if not self.current_preset_id:
+            return None
+        for preset in self._presets():
+            if preset["id"] == self.current_preset_id:
+                return preset
+        return None
 
     def _commit_current_form_to_draft(self) -> bool:
         provider = self._selected_provider()
@@ -264,6 +344,29 @@ class SettingsApp:
             model["enabled"] = bool(self.model_enabled_var.get())
             model["timeout_ms"] = int(timeout_text)
             model["system_prompt"] = self.system_prompt_text.get("1.0", tk.END).strip() or DEFAULT_SYSTEM_PROMPT
+            model["user_prompt_template"] = (
+                self.user_prompt_text.get("1.0", tk.END).strip() or DEFAULT_USER_PROMPT_TEMPLATE
+            )
+        return self._commit_preset_form_to_draft()
+
+    def _commit_preset_form_to_draft(self) -> bool:
+        preset = self._selected_preset()
+        if preset is None:
+            return True
+
+        shortcut = normalize_shortcut(self.preset_shortcut_var.get())
+        if shortcut == RESERVED_TRANSLATION_SHORTCUT:
+            messagebox.showerror("Invalid Shortcut", "Shortcut '1' is reserved for the translation action.")
+            return False
+        if shortcut:
+            for item in self._presets():
+                if item["id"] != preset["id"] and item.get("shortcut", "") == shortcut:
+                    messagebox.showerror("Duplicate Shortcut", f"Shortcut '{shortcut}' is already used by another preset.")
+                    return False
+
+        preset["name"] = self.preset_name_var.get().strip() or preset["name"]
+        preset["shortcut"] = shortcut
+        preset["system_prompt"] = self.preset_prompt_text.get("1.0", tk.END).strip()
         return True
 
     def _mark_dirty(self, message: str = "Unsaved changes.") -> None:
@@ -281,6 +384,50 @@ class SettingsApp:
                 return
         self.current_selection_id = selection[0]
         self._load_selection_into_form()
+
+    def _refresh_preset_list(self) -> None:
+        self.preset_list.delete(0, tk.END)
+        preset_ids: list[str] = []
+        for preset in self._presets():
+            label = f"{preset.get('shortcut', '') or '-'} : {preset['name']}"
+            self.preset_list.insert(tk.END, label)
+            preset_ids.append(preset["id"])
+
+        if self.current_preset_id and self.current_preset_id in preset_ids:
+            index = preset_ids.index(self.current_preset_id)
+            self.preset_list.selection_clear(0, tk.END)
+            self.preset_list.selection_set(index)
+            self.preset_list.activate(index)
+        elif preset_ids:
+            self.current_preset_id = preset_ids[0]
+            self.preset_list.selection_set(0)
+            self.preset_list.activate(0)
+        else:
+            self.current_preset_id = ""
+
+        self._load_selected_preset()
+
+    def _load_selected_preset(self) -> None:
+        preset = self._selected_preset()
+        if preset is None:
+            self._clear_preset_fields()
+            return
+        self.preset_name_var.set(preset["name"])
+        self.preset_shortcut_var.set(preset.get("shortcut", ""))
+        self.preset_prompt_text.delete("1.0", tk.END)
+        self.preset_prompt_text.insert("1.0", preset.get("system_prompt", ""))
+
+    def _on_preset_selected(self) -> None:
+        selection = self.preset_list.curselection()
+        if not selection:
+            return
+        new_preset = self._presets()[selection[0]]
+        if self.current_preset_id and self.current_preset_id != new_preset["id"]:
+            if not self._commit_preset_form_to_draft():
+                self._refresh_preset_list()
+                return
+        self.current_preset_id = new_preset["id"]
+        self._load_selected_preset()
 
     def _add_provider(self) -> None:
         if not self._commit_current_form_to_draft():
@@ -310,11 +457,38 @@ class SettingsApp:
             "enabled": True,
             "timeout_ms": 30000,
             "system_prompt": DEFAULT_SYSTEM_PROMPT,
+            "user_prompt_template": DEFAULT_USER_PROMPT_TEMPLATE,
         }
         provider["models"].append(model)
         self.current_selection_id = self._model_iid(provider, model)
         self._mark_dirty("Model added.")
         self._refresh_tree()
+
+    def _add_prompt_preset(self) -> None:
+        if not self._commit_current_form_to_draft():
+            return
+        preset = {
+            "id": make_id("preset"),
+            "name": f"Prompt Preset {len(self._presets()) + 1}",
+            "shortcut": "",
+            "system_prompt": "",
+        }
+        self._presets().append(preset)
+        self.current_preset_id = preset["id"]
+        self._mark_dirty("Prompt preset added.")
+        self._refresh_preset_list()
+
+    def _delete_prompt_preset(self) -> None:
+        preset = self._selected_preset()
+        if preset is None:
+            messagebox.showinfo("Delete Preset", "Please select a prompt preset first.")
+            return
+        if not messagebox.askyesno("Delete Preset", f"Delete prompt preset '{preset['name']}'?"):
+            return
+        self.config["prompt_presets"] = [item for item in self._presets() if item["id"] != preset["id"]]
+        self.current_preset_id = ""
+        self._mark_dirty("Prompt preset deleted.")
+        self._refresh_preset_list()
 
     def _delete_selected(self) -> None:
         if not self._commit_current_form_to_draft():
@@ -370,7 +544,7 @@ class SettingsApp:
 
         choice = messagebox.askyesnocancel(
             "Unsaved Changes",
-            "You have unsaved provider/model changes.\n\nYes: save and close\nNo: discard and close\nCancel: stay here",
+            "You have unsaved provider, model, or prompt preset changes.\n\nYes: save and close\nNo: discard and close\nCancel: stay here",
         )
         if choice is None:
             return

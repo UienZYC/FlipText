@@ -88,6 +88,7 @@ Python handles:
 - provider/model configuration
 - API calls
 - per-model timeout settings
+- customizable system prompts and user prompt templates
 - response parsing
 
 One-time local setup:
@@ -97,3 +98,26 @@ uv sync
 ```
 
 After that, run `FlipText.ahk`, open `Settings` from the tray menu, add a provider, paste the API key, add one or more models, and set the active model.
+
+Each LLM model can now customize both parts of the conversation sent to the API:
+
+- `System prompt`: the instruction that defines the model's role and output rules
+- `User prompt template`: the request body built for each translation
+
+The user prompt template supports these placeholders:
+
+- `{source_lang}`
+- `{target_lang}`
+- `{text}`
+
+FlipText logs the fully composed system and user prompts for each LLM request to `FlipText.log`, which makes it easier to inspect how each conversation is assembled.
+
+## Prompt Presets
+
+FlipText now supports non-translation prompt presets for the active LLM model.
+
+- Press `F1`, then `1` to keep using the original translation action
+- Press `F1`, then another configured shortcut such as `2` or `q` to run a saved prompt preset
+- Prompt presets are managed in `Settings`
+- Each preset stores a name, a single-character shortcut, and a system prompt
+- The selected text is sent as the user message for preset runs

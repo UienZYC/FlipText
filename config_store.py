@@ -14,6 +14,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "Return only the translated text. Preserve line breaks, formatting, and tone. "
     "Do not add explanations, quotation marks, notes, or extra text."
 )
+DEFAULT_USER_PROMPT_TEMPLATE = "Translate the following text from {source_lang} to {target_lang}.\n\n{text}"
+RESERVED_TRANSLATION_SHORTCUT = "1"
 
 
 def get_user_config_dir() -> Path:
@@ -35,6 +37,7 @@ def default_config() -> dict[str, Any]:
             "active_provider_id": "",
             "active_model_id": "",
         },
+        "prompt_presets": [],
         "providers": [],
     }
 
@@ -71,6 +74,18 @@ def normalize_config(config: dict[str, Any]) -> None:
     translation["engine"] = normalize_engine(translation.get("engine", "edge"))
     translation.setdefault("active_provider_id", "")
     translation.setdefault("active_model_id", "")
+    presets = config.setdefault("prompt_presets", [])
+    used_shortcuts: set[str] = set()
+    for index, preset in enumerate(presets, start=1):
+        preset["id"] = preset.get("id") or make_id("preset")
+        preset["name"] = preset.get("name", "").strip() or f"Prompt Preset {index}"
+        shortcut = normalize_shortcut(preset.get("shortcut", ""))
+        if not shortcut or shortcut == RESERVED_TRANSLATION_SHORTCUT or shortcut in used_shortcuts:
+            shortcut = ""
+        preset["shortcut"] = shortcut
+        preset["system_prompt"] = str(preset.get("system_prompt", "")).strip()
+        if shortcut:
+            used_shortcuts.add(shortcut)
 
     providers = config.setdefault("providers", [])
     for provider in providers:
@@ -86,6 +101,10 @@ def normalize_config(config: dict[str, Any]) -> None:
             model["timeout_ms"] = normalize_timeout(model.get("timeout_ms", 30000))
             model["system_prompt"] = (
                 str(model.get("system_prompt", DEFAULT_SYSTEM_PROMPT)).strip() or DEFAULT_SYSTEM_PROMPT
+            )
+            model["user_prompt_template"] = (
+                str(model.get("user_prompt_template", DEFAULT_USER_PROMPT_TEMPLATE)).strip()
+                or DEFAULT_USER_PROMPT_TEMPLATE
             )
 
     active = get_active_profile(config)
@@ -108,6 +127,11 @@ def normalize_timeout(value: Any) -> int:
         return 30000
     timeout = int(text)
     return timeout if timeout >= 1000 else 30000
+
+
+def normalize_shortcut(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text[:1] if text else ""
 
 
 def make_id(prefix: str) -> str:
@@ -137,6 +161,25 @@ def iter_profiles(config: dict[str, Any]) -> list[dict[str, Any]]:
                 }
             )
     return profiles
+
+
+def iter_prompt_presets(config: dict[str, Any]) -> list[dict[str, Any]]:
+    presets: list[dict[str, Any]] = []
+    for preset in config.get("prompt_presets", []):
+        presets.append(
+            {
+                "id": preset["id"],
+                "name": preset["name"],
+                "shortcut": preset["shortcut"],
+                "system_prompt": preset["system_prompt"],
+                "label": build_preset_label(preset["shortcut"], preset["name"]),
+            }
+        )
+    return presets
+
+
+def build_preset_label(shortcut: str, name: str) -> str:
+    return f"{shortcut} - {name}" if shortcut else f"(No shortcut) - {name}"
 
 
 def build_profile_id(provider_id: str, model_id: str) -> str:
@@ -190,6 +233,20 @@ def resolve_profile(config: dict[str, Any], profile_id: str | None = None) -> tu
         return active
 
     raise RuntimeError("No active LLM profile is configured.")
+
+
+def find_prompt_preset(config: dict[str, Any], preset_id: str) -> dict[str, Any] | None:
+    for preset in config.get("prompt_presets", []):
+        if preset["id"] == preset_id:
+            return preset
+    return None
+
+
+def resolve_prompt_preset(config: dict[str, Any], preset_id: str) -> dict[str, Any]:
+    preset = find_prompt_preset(config, preset_id)
+    if preset is None:
+        raise RuntimeError(f"Prompt preset '{preset_id}' was not found.")
+    return preset
 
 
 def set_engine(config: dict[str, Any], engine: str) -> None:

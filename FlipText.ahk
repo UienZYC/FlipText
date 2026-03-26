@@ -19,7 +19,6 @@ global TransGui := ""
 global TransSourceCtrl := ""
 global TransBodyCtrl := ""
 global LOG_PATH := A_ScriptDir "\FlipText.log"
-global PROFILE_MENU := Menu()
 global CONFIG_SUMMARY := ""
 global CONFIG_LAST_MTIME := ""
 global BOUND_HOTKEYS := []
@@ -314,11 +313,7 @@ PythonRunBehavior(text, profileId, promptId) {
 }
 
 SetupTrayMenu() {
-    A_TrayMenu.Add()
     A_TrayMenu.Add("Settings", OpenSettings)
-    A_TrayMenu.Add("Use Edge Translation", SetEngineEdge)
-    A_TrayMenu.Add("Use LLM Translation", SetEngineLLM)
-    A_TrayMenu.Add("LLM Models", PROFILE_MENU)
     A_TrayMenu.Add("Reload Config", ReloadConfigFromMenu)
     UpdateTrayChecks()
     SetTimer(WatchConfigChanges, 1000)
@@ -329,73 +324,7 @@ UpdateTrayChecks() {
 
     CONFIG_SUMMARY := LoadConfigSummary()
     try CONFIG_LAST_MTIME := FileGetTime(UserConfigPath(), "M")
-
-    try A_TrayMenu.Uncheck("Use Edge Translation")
-    try A_TrayMenu.Uncheck("Use LLM Translation")
-
-    if (CONFIG_SUMMARY.engine = "llm")
-        A_TrayMenu.Check("Use LLM Translation")
-    else
-        A_TrayMenu.Check("Use Edge Translation")
-
-    RebuildProfileMenu(CONFIG_SUMMARY)
     RebuildBoundHotkeys(CONFIG_SUMMARY)
-}
-
-RebuildProfileMenu(summary) {
-    global PROFILE_MENU
-
-    try PROFILE_MENU.Delete()
-
-    for _, profile in GetSummaryProfiles(summary) {
-        label := profile.label
-        if !profile.enabled
-            label .= " [Disabled]"
-        PROFILE_MENU.Add(label, SelectLLMProfile)
-        if (profile.id = summary.active_profile_id)
-            PROFILE_MENU.Check(label)
-    }
-
-    if (GetSummaryProfiles(summary).Length = 0)
-        PROFILE_MENU.Add("(No models configured)", NoOpMenu)
-}
-
-NoOpMenu(*) {
-}
-
-SelectLLMProfile(itemName, *) {
-    summary := CONFIG_SUMMARY
-    for _, profile in GetSummaryProfiles(summary) {
-        label := profile.label
-        if !profile.enabled
-            label .= " [Disabled]"
-        if (label = itemName) {
-            SetActiveProfile(profile.id)
-            return
-        }
-    }
-}
-
-SetActiveProfile(profileId) {
-    RunConfigCli("set-active-profile", "--profile-id " QuoteArg(profileId))
-    UpdateTrayChecks()
-    ToolTip "Active model updated"
-    SetTimer () => ToolTip(), -1000
-}
-
-SetEngineEdge(*) {
-    SetEngine("edge")
-}
-
-SetEngineLLM(*) {
-    SetEngine("llm")
-}
-
-SetEngine(engine) {
-    RunConfigCli("set-engine", "--engine " QuoteArg(engine))
-    UpdateTrayChecks()
-    ToolTip "Translation engine: " ((engine = "llm") ? "LLM" : "Edge")
-    SetTimer () => ToolTip(), -1000
 }
 
 ReloadConfigFromMenu(*) {

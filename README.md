@@ -137,3 +137,9 @@ The derivation rule shown in Settings is:
 
 - if the selected text contains Chinese characters, `source_lang=zh` and `target_lang=en`
 - otherwise, `source_lang=en` and `target_lang=zh`
+
+The Settings UI is organized around three main pages:
+
+- `Models`: provider and model configuration only
+- `Prompts`: prompt library with variable help
+- `Behaviors`: behavior definition plus the shortcuts currently bound to each behavior

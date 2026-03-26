@@ -112,12 +112,28 @@ The user prompt template supports these placeholders:
 
 FlipText logs the fully composed system and user prompts for each LLM request to `FlipText.log`, which makes it easier to inspect how each conversation is assembled.
 
-## Prompt Presets
+## Prompt And Behavior Libraries
 
-FlipText now supports non-translation prompt presets for the active LLM model.
+FlipText now supports three configurable layers:
 
-- Press `F1`, then `1` to keep using the original translation action
-- Press `F1`, then another configured shortcut such as `2` or `q` to run a saved prompt preset
-- Prompt presets are managed in `Settings`
-- Each preset stores a name, a single-character shortcut, and a system prompt
-- The selected text is sent as the user message for preset runs
+- Prompt library: each prompt defines both the system prompt and the user prompt template
+- Behavior library: each behavior defines what to do, such as `Edge` translation, `Show Shortcuts`, or `selected model + selected prompt`
+- Shortcut bindings: each binding maps a direct hotkey such as `F1`, `F1+1`, `F1+2`, or `F1+Q` to a behavior
+
+This means users can:
+
+- build a reusable prompt thesaurus
+- build a behavior library by pairing prompts with specific models
+- bind direct shortcut combinations to those behaviors
+- bind a special `Show Shortcuts` behavior to any shortcut to quickly display the current mapping list
+
+When a prompt runs through an LLM behavior, the prompt editor supports:
+
+- `{text}`
+- `{source_lang}`
+- `{target_lang}`
+
+The derivation rule shown in Settings is:
+
+- if the selected text contains Chinese characters, `source_lang=zh` and `target_lang=en`
+- otherwise, `source_lang=en` and `target_lang=zh`

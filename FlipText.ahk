@@ -22,125 +22,9 @@ global LOG_PATH := A_ScriptDir "\FlipText.log"
 global PROFILE_MENU := Menu()
 global CONFIG_SUMMARY := ""
 global CONFIG_LAST_MTIME := ""
+global BOUND_HOTKEYS := []
 
 SetupTrayMenu()
-
-F1::
-{
-    global TransGui
-
-    MouseGetPos(&mx, &my)
-    G_STATE.X := mx + 15
-    G_STATE.Y := my + 15
-
-    originalClipboard := ClipboardAll()
-    A_Clipboard := ""
-    G_STATE.IsMoved := false
-
-    targetText := ""
-    try {
-        Send "^c"
-        if !ClipWait(0.15) {
-            G_STATE.Mode := "Line"
-            Send "{vkE8}"
-            BlockInput(true)
-            Send "{End}"
-            Sleep 15
-            Send "+{Home}"
-            Sleep 50
-            Send "^c"
-            ClipWait(0.15)
-            Send "{End}"
-            BlockInput(false)
-        } else {
-            G_STATE.Mode := "Select"
-        }
-        targetText := Trim(A_Clipboard, " `t`r`n")
-    }
-
-    if (originalClipboard != "") {
-        Sleep 100
-        A_Clipboard := originalClipboard
-    }
-
-    if (targetText == "") {
-        ToolTip "Failed to get text automatically, please select text first."
-        SetTimer () => ToolTip(), -1000
-        return
-    }
-
-    ClearPopup()
-    action := WaitForPromptAction()
-    if !IsObject(action)
-        return
-
-    StartPromptAction(targetText, action)
-}
-
-StartPromptAction(text, action) {
-    summary := LoadConfigSummary()
-
-    try {
-        if (action.type = "translation")
-            RunTranslationAction(text, summary)
-        else if (action.type = "preset")
-            RunPresetAction(text, summary, action)
-        else
-            throw Error("Unknown action type: " action.type)
-
-        keys := ["~LButton","~Up","~Down","~Left","~Right","~BS","~Del","~Enter","~NumpadEnter"]
-        for k in keys
-            Hotkey k, MarkAsMoved, "On"
-
-        Hotkey "Tab", DoReplace, "On"
-        Hotkey "Esc", ClearUI, "On"
-
-        UpdateTransGui(G_STATE.Result)
-    } catch as err {
-        LogDebug("Prompt action error. " err.Message)
-        UpdateTransGui("Prompt Error")
-        SetTimer(ClearUI, -2000)
-    }
-}
-
-RunTranslationAction(text, summary) {
-    if (summary.engine = "llm" && summary.active_profile_id != "") {
-        StartLoadingState(summary.active_profile_label, summary.active_timeout_ms)
-
-        try {
-            result := PythonTranslate(text, summary.active_profile_id)
-            StopLoadingState()
-            G_STATE.Result := result["text"]
-            G_STATE.Source := result["source"]
-        } catch as err {
-            StopLoadingState()
-            LogDebug("LLM translation failed. " err.Message)
-            G_STATE.Result := EdgeTranslate(text)
-            fallbackLabel := (summary.active_profile_label != "") ? summary.active_profile_label : "LLM"
-            G_STATE.Source := "Edge fallback: " fallbackLabel
-        }
-    } else {
-        G_STATE.LastDurationMs := 0
-        G_STATE.Result := EdgeTranslate(text)
-        G_STATE.Source := "Edge"
-    }
-}
-
-RunPresetAction(text, summary, action) {
-    if (summary.active_profile_id = "")
-        throw Error("No active LLM profile is configured for prompt presets.")
-
-    StartLoadingState(action.name, summary.active_timeout_ms)
-    try {
-        result := PythonTranslate(text, summary.active_profile_id, action.id)
-    } catch as err {
-        StopLoadingState()
-        throw err
-    }
-    StopLoadingState()
-    G_STATE.Result := result["text"]
-    G_STATE.Source := result["source"]
-}
 
 UpdateTransGui(newStr) {
     global TransGui, TransSourceCtrl, TransBodyCtrl, G_STATE
@@ -198,6 +82,104 @@ ClearPopup() {
     }
     TransSourceCtrl := ""
     TransBodyCtrl := ""
+}
+
+HandleBoundShortcut(shortcut, *) {
+    ExecuteBehaviorBinding(shortcut)
+}
+
+ExecuteBehaviorBinding(shortcut) {
+    summary := CONFIG_SUMMARY
+    binding := FindBindingByShortcut(summary, shortcut)
+    if !IsObject(binding)
+        return
+    behavior := FindBehaviorById(summary, binding.behavior_id)
+    if !IsObject(behavior)
+        return
+
+    if (behavior.type = "show_shortcuts") {
+        ToolTip BuildShortcutMappingsText(summary)
+        SetTimer () => ToolTip(), -3000
+        return
+    }
+
+    text := CaptureTargetText()
+    if (text = "")
+        return
+
+    try {
+        if (behavior.type = "edge_translate") {
+            G_STATE.LastDurationMs := 0
+            G_STATE.Result := EdgeTranslate(text)
+            G_STATE.Source := "Edge"
+        } else if (behavior.type = "llm_prompt") {
+            StartLoadingState(behavior.name, summary.active_timeout_ms)
+            try {
+                result := PythonRunBehavior(text, behavior.profile_id, behavior.prompt_id)
+            } catch as err {
+                StopLoadingState()
+                throw err
+            }
+            StopLoadingState()
+            G_STATE.Result := result["text"]
+            G_STATE.Source := result["source"]
+        } else {
+            throw Error("Unknown behavior type: " behavior.type)
+        }
+
+        keys := ["~LButton","~Up","~Down","~Left","~Right","~BS","~Del","~Enter","~NumpadEnter"]
+        for k in keys
+            Hotkey k, MarkAsMoved, "On"
+        Hotkey "Tab", DoReplace, "On"
+        Hotkey "Esc", ClearUI, "On"
+        UpdateTransGui(G_STATE.Result)
+    } catch as err {
+        LogDebug("Behavior error. " err.Message)
+        UpdateTransGui("Behavior Error")
+        SetTimer(ClearUI, -2000)
+    }
+}
+
+CaptureTargetText() {
+    MouseGetPos(&mx, &my)
+    G_STATE.X := mx + 15
+    G_STATE.Y := my + 15
+    G_STATE.IsMoved := false
+
+    originalClipboard := ClipboardAll()
+    A_Clipboard := ""
+
+    targetText := ""
+    try {
+        Send "^c"
+        if !ClipWait(0.15) {
+            G_STATE.Mode := "Line"
+            Send "{vkE8}"
+            BlockInput(true)
+            Send "{End}"
+            Sleep 15
+            Send "+{Home}"
+            Sleep 50
+            Send "^c"
+            ClipWait(0.15)
+            Send "{End}"
+            BlockInput(false)
+        } else {
+            G_STATE.Mode := "Select"
+        }
+        targetText := Trim(A_Clipboard, " `t`r`n")
+    }
+
+    if (originalClipboard != "") {
+        Sleep 100
+        A_Clipboard := originalClipboard
+    }
+
+    if (targetText = "") {
+        ToolTip "Failed to get text automatically, please select text first."
+        SetTimer () => ToolTip(), -1000
+    }
+    return targetText
 }
 
 DoReplace(*) {
@@ -298,7 +280,7 @@ UpdateLoadingGui() {
         TransBodyCtrl.Text := text
 }
 
-PythonTranslate(text, profileId, presetId := "") {
+PythonRunBehavior(text, profileId, promptId) {
     tempDir := A_Temp "\FlipText"
     if !DirExist(tempDir)
         DirCreate(tempDir)
@@ -311,7 +293,7 @@ PythonTranslate(text, profileId, presetId := "") {
     FileAppend(text, inputPath, "UTF-8")
 
     args := "--profile-id " QuoteArg(profileId)
-        . (presetId != "" ? " --preset-id " QuoteArg(presetId) : "")
+        . " --prompt-id " QuoteArg(promptId)
         . " --text-file " QuoteArg(inputPath)
         . " --result-file " QuoteArg(outputPath)
         . " --log-file " QuoteArg(LOG_PATH)
@@ -357,6 +339,7 @@ UpdateTrayChecks() {
         A_TrayMenu.Check("Use Edge Translation")
 
     RebuildProfileMenu(CONFIG_SUMMARY)
+    RebuildBoundHotkeys(CONFIG_SUMMARY)
 }
 
 RebuildProfileMenu(summary) {
@@ -490,7 +473,9 @@ DefaultSummary() {
         active_profile_label: "",
         active_timeout_ms: 30000,
         profiles: [],
-        prompt_presets: []
+        prompts: [],
+        behaviors: [],
+        bindings: []
     }
 }
 
@@ -533,14 +518,36 @@ ParseSummaryText(text) {
                     timeout_ms: IntegerOrDefault(parts[4], 30000)
                 })
             }
-        } else if (key = "prompt_preset") {
+        } else if (key = "prompt") {
             parts := SplitEscapedProfile(value)
-            if (parts.Length >= 4) {
-                summary.prompt_presets.Push({
+            if (parts.Length >= 2) {
+                summary.prompts.Push({
+                    id: UnescapeSummaryValue(parts[1]),
+                    name: UnescapeSummaryValue(parts[2])
+                })
+            }
+        } else if (key = "behavior") {
+            parts := SplitEscapedProfile(value)
+            if (parts.Length >= 6) {
+                summary.behaviors.Push({
+                    id: UnescapeSummaryValue(parts[1]),
+                    name: UnescapeSummaryValue(parts[2]),
+                    type: UnescapeSummaryValue(parts[3]),
+                    profile_id: UnescapeSummaryValue(parts[4]),
+                    prompt_id: UnescapeSummaryValue(parts[5]),
+                    label: UnescapeSummaryValue(parts[6])
+                })
+            }
+        } else if (key = "binding") {
+            parts := SplitEscapedProfile(value)
+            if (parts.Length >= 6) {
+                summary.bindings.Push({
                     id: UnescapeSummaryValue(parts[1]),
                     shortcut: UnescapeSummaryValue(parts[2]),
-                    name: UnescapeSummaryValue(parts[3]),
-                    label: UnescapeSummaryValue(parts[4])
+                    behavior_id: UnescapeSummaryValue(parts[3]),
+                    behavior_name: UnescapeSummaryValue(parts[4]),
+                    behavior_type: UnescapeSummaryValue(parts[5]),
+                    behavior_label: UnescapeSummaryValue(parts[6])
                 })
             }
         }
@@ -598,47 +605,84 @@ GetSummaryProfiles(summary) {
         return []
 }
 
-GetPromptPresets(summary) {
-    try return summary.prompt_presets
+GetSummaryBehaviors(summary) {
+    try return summary.behaviors
     catch
         return []
 }
 
-WaitForPromptAction() {
-    summary := LoadConfigSummary()
-    ToolTip BuildPromptActionHint(summary)
+GetSummaryBindings(summary) {
+    try return summary.bindings
+    catch
+        return []
+}
 
-    ih := InputHook("L1 T3")
-    ih.Start()
-    ih.Wait()
-
-    SetTimer () => ToolTip(), -10
-
-    key := StrLower(ih.Input)
-    if (key = "") {
-        ToolTip "Prompt action cancelled"
-        SetTimer () => ToolTip(), -1000
-        return ""
-    }
-
-    if (key = "1")
-        return { type: "translation", key: key, name: "Translate" }
-
-    for _, preset in GetPromptPresets(summary) {
-        if (preset.shortcut = key)
-            return { type: "preset", id: preset.id, key: key, name: preset.name }
-    }
-
-    ToolTip "No prompt action mapped to '" key "'"
-    SetTimer () => ToolTip(), -1000
+FindBindingByShortcut(summary, shortcut) {
+    for _, binding in GetSummaryBindings(summary)
+        if (binding.shortcut = shortcut)
+            return binding
     return ""
 }
 
-BuildPromptActionHint(summary) {
-    text := "Press 1 for translation"
-    for _, preset in GetPromptPresets(summary) {
-        if (preset.shortcut != "")
-            text .= "`n" preset.shortcut ": " preset.name
+FindBehaviorById(summary, behaviorId) {
+    for _, behavior in GetSummaryBehaviors(summary)
+        if (behavior.id = behaviorId)
+            return behavior
+    return ""
+}
+
+BuildShortcutMappingsText(summary) {
+    text := "Shortcut mappings"
+    for _, binding in GetSummaryBindings(summary)
+        text .= "`n" ToDisplayShortcut(binding.shortcut) ": " binding.behavior_label
+    return text
+}
+
+RebuildBoundHotkeys(summary) {
+    global BOUND_HOTKEYS
+
+    for _, hotkeyName in BOUND_HOTKEYS
+        try Hotkey hotkeyName, "Off"
+    BOUND_HOTKEYS := []
+
+    for _, binding in GetSummaryBindings(summary) {
+        hotkeyName := ShortcutToHotkey(binding.shortcut)
+        if (hotkeyName = "")
+            continue
+        try {
+            Hotkey hotkeyName, HandleBoundShortcut.Bind(binding.shortcut), "On"
+            BOUND_HOTKEYS.Push(hotkeyName)
+        } catch as err {
+            LogDebug("Failed to bind hotkey '" binding.shortcut "'. " err.Message)
+        }
+    }
+}
+
+ShortcutToHotkey(shortcut) {
+    parts := StrSplit(StrLower(shortcut), "+")
+    if (parts.Length = 1)
+        return NormalizeKeyName(parts[1])
+    if (parts.Length = 2)
+        return NormalizeKeyName(parts[1]) " & " NormalizeKeyName(parts[2])
+    return ""
+}
+
+NormalizeKeyName(name) {
+    upper := StrUpper(name)
+    if RegExMatch(upper, "^F\d+$")
+        return upper
+    if (StrLen(name) = 1)
+        return name
+    return upper
+}
+
+ToDisplayShortcut(shortcut) {
+    parts := StrSplit(shortcut, "+")
+    text := ""
+    for index, part in parts {
+        if (index > 1)
+            text .= "+"
+        text .= NormalizeKeyName(part)
     }
     return text
 }

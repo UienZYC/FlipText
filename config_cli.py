@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import traceback
 from pathlib import Path
 from typing import Any
 
-from config_store import ensure_config, iter_profiles, iter_prompt_presets, resolve_profile, save_config, set_active_profile, set_engine
+from config_store import (
+    ensure_config,
+    iter_behaviors,
+    iter_bindings,
+    iter_profiles,
+    iter_prompts,
+    resolve_profile,
+    save_config,
+    set_active_profile,
+    set_engine,
+)
 
 
 def main() -> int:
@@ -26,12 +35,10 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        script_dir = Path(__file__).resolve().parent
-        config = ensure_config(script_dir)
+        config = ensure_config(Path(__file__).resolve().parent)
 
         if args.command == "summary":
-            payload = build_summary(config)
-            text = encode_summary(payload)
+            text = encode_summary(build_summary(config))
             if args.result_file:
                 Path(args.result_file).write_text(text, encoding="utf-8")
             else:
@@ -67,20 +74,17 @@ def main() -> int:
 
 def build_summary(config: dict[str, Any]) -> dict[str, Any]:
     profiles = iter_profiles(config)
-    active_provider = None
-    active_model = None
-    if profiles:
-        try:
-            active_provider, active_model = resolve_profile(config)
-        except RuntimeError:
-            active_provider, active_model = None, None
     active_profile_id = ""
     active_profile_label = ""
     active_timeout_ms = 30000
-    if active_provider and active_model:
-        active_profile_id = f"{active_provider['id']}::{active_model['id']}"
-        active_profile_label = f"{active_provider['name']} / {active_model['name']}"
-        active_timeout_ms = active_model["timeout_ms"]
+    if profiles:
+        try:
+            active_provider, active_model = resolve_profile(config)
+            active_profile_id = f"{active_provider['id']}::{active_model['id']}"
+            active_profile_label = f"{active_provider['name']} / {active_model['name']}"
+            active_timeout_ms = active_model["timeout_ms"]
+        except RuntimeError:
+            pass
 
     return {
         "engine": config["translation"]["engine"],
@@ -88,7 +92,9 @@ def build_summary(config: dict[str, Any]) -> dict[str, Any]:
         "active_profile_label": active_profile_label,
         "active_timeout_ms": active_timeout_ms,
         "profiles": profiles,
-        "prompt_presets": iter_prompt_presets(config),
+        "prompts": iter_prompts(config),
+        "behaviors": iter_behaviors(config),
+        "bindings": iter_bindings(config),
     }
 
 
@@ -100,10 +106,10 @@ def encode_summary(summary: dict[str, Any]) -> str:
         f"active_profile_label={escape_value(summary['active_profile_label'])}",
         f"active_timeout_ms={summary['active_timeout_ms']}",
     ]
+
     for profile in summary["profiles"]:
         lines.append(
-            "profile="
-            + "|".join(
+            "profile=" + "|".join(
                 [
                     escape_value(profile["id"]),
                     escape_value(profile["label"]),
@@ -112,18 +118,45 @@ def encode_summary(summary: dict[str, Any]) -> str:
                 ]
             )
         )
-    for preset in summary["prompt_presets"]:
+
+    for prompt in summary["prompts"]:
         lines.append(
-            "prompt_preset="
-            + "|".join(
+            "prompt=" + "|".join(
                 [
-                    escape_value(preset["id"]),
-                    escape_value(preset["shortcut"]),
-                    escape_value(preset["name"]),
-                    escape_value(preset["label"]),
+                    escape_value(prompt["id"]),
+                    escape_value(prompt["name"]),
                 ]
             )
         )
+
+    for behavior in summary["behaviors"]:
+        lines.append(
+            "behavior=" + "|".join(
+                [
+                    escape_value(behavior["id"]),
+                    escape_value(behavior["name"]),
+                    escape_value(behavior["type"]),
+                    escape_value(behavior["profile_id"]),
+                    escape_value(behavior["prompt_id"]),
+                    escape_value(behavior["label"]),
+                ]
+            )
+        )
+
+    for binding in summary["bindings"]:
+        lines.append(
+            "binding=" + "|".join(
+                [
+                    escape_value(binding["id"]),
+                    escape_value(binding["shortcut"]),
+                    escape_value(binding["behavior_id"]),
+                    escape_value(binding["behavior_name"]),
+                    escape_value(binding["behavior_type"]),
+                    escape_value(binding["behavior_label"]),
+                ]
+            )
+        )
+
     return "\n".join(lines) + "\n"
 
 

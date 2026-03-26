@@ -24,7 +24,6 @@ class SettingsApp:
         self.current_model_selection = ""
         self.current_prompt_id = ""
         self.current_behavior_id = ""
-        self.current_binding_id = ""
         self.show_key = False
         self.dirty = False
 
@@ -46,7 +45,7 @@ class SettingsApp:
         self.behavior_type_var = tk.StringVar(value="llm_prompt")
         self.behavior_profile_var = tk.StringVar()
         self.behavior_prompt_var = tk.StringVar()
-        self.binding_shortcut_var = tk.StringVar()
+        self.behavior_shortcut_var = tk.StringVar()
 
         self._build_ui()
         self._refresh_all()
@@ -184,9 +183,14 @@ class SettingsApp:
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         left.columnconfigure(0, weight=1)
         left.rowconfigure(0, weight=1)
-        self.behavior_list = tk.Listbox(left, exportselection=False)
-        self.behavior_list.grid(row=0, column=0, sticky="nsew")
-        self.behavior_list.bind("<<ListboxSelect>>", lambda _event: self._on_behavior_selected())
+        self.behavior_tree = ttk.Treeview(left, columns=("shortcut",), show="tree headings", selectmode="browse")
+        self.behavior_tree.heading("#0", text="Behavior")
+        self.behavior_tree.heading("shortcut", text="Shortcut")
+        self.behavior_tree.column("#0", width=240, stretch=True)
+        self.behavior_tree.column("shortcut", width=130, stretch=False, anchor="center")
+        self.behavior_tree.grid(row=0, column=0, sticky="nsew")
+        self.behavior_tree.bind("<<TreeviewSelect>>", lambda _event: self._on_behavior_selected())
+        self.behavior_tree.bind("<ButtonRelease-1>", self._on_behavior_tree_click)
         behavior_buttons = ttk.Frame(left)
         behavior_buttons.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         behavior_buttons.columnconfigure((0, 1), weight=1)
@@ -213,19 +217,13 @@ class SettingsApp:
         ttk.Label(right, text="Prompt").grid(row=3, column=0, sticky="w")
         self.behavior_prompt_combo = ttk.Combobox(right, textvariable=self.behavior_prompt_var, state="readonly")
         self.behavior_prompt_combo.grid(row=3, column=1, sticky="ew", pady=(0, 6))
-        binding_box = ttk.LabelFrame(right, text="Bindings For This Behavior", padding=10)
-        binding_box.grid(row=4, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
-        binding_box.columnconfigure(0, weight=1)
-        self.binding_list = tk.Listbox(binding_box, exportselection=False, height=6)
-        self.binding_list.grid(row=0, column=0, columnspan=2, sticky="nsew")
-        self.binding_list.bind("<<ListboxSelect>>", lambda _event: self._on_binding_selected())
-        ttk.Label(binding_box, text="Shortcut").grid(row=1, column=0, sticky="w", pady=(8, 0))
-        ttk.Entry(binding_box, textvariable=self.binding_shortcut_var).grid(row=1, column=1, sticky="ew", pady=(8, 0))
-        binding_buttons = ttk.Frame(binding_box)
-        binding_buttons.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        binding_buttons.columnconfigure((0, 1), weight=1)
-        ttk.Button(binding_buttons, text="Add Binding", command=self._add_binding).grid(row=0, column=0, sticky="ew")
-        ttk.Button(binding_buttons, text="Delete Binding", command=self._delete_binding).grid(row=0, column=1, padx=(8, 0), sticky="ew")
+        ttk.Label(right, text="Shortcut").grid(row=4, column=0, sticky="w", pady=(12, 0))
+        self.behavior_shortcut_entry = ttk.Entry(right, textvariable=self.behavior_shortcut_var)
+        self.behavior_shortcut_entry.grid(row=4, column=1, sticky="ew", pady=(12, 0))
+        ttk.Label(
+            right,
+            text="Click a behavior row to edit it. Clicking the shortcut cell selects that behavior and jumps to the shortcut field on the right.",
+        ).grid(row=5, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
     def _providers(self) -> list[dict]:
         return self.config["providers"]
@@ -248,9 +246,6 @@ class SettingsApp:
 
     def _build_prompt_options(self) -> dict[str, str]:
         return {prompt["name"]: prompt["id"] for prompt in self._prompts()}
-
-    def _build_behavior_options(self) -> dict[str, str]:
-        return {behavior["name"]: behavior["id"] for behavior in self._behaviors()}
 
     def _selected_provider(self) -> dict | None:
         selection = self.current_model_selection
@@ -294,15 +289,9 @@ class SettingsApp:
 
     def _selected_binding(self) -> dict | None:
         for binding in self._bindings():
-            if binding["id"] == self.current_binding_id:
+            if binding.get("behavior_id", "") == self.current_behavior_id:
                 return binding
         return None
-
-    def _bindings_for_current_behavior(self) -> list[dict]:
-        behavior = self._selected_behavior()
-        if behavior is None:
-            return []
-        return [binding for binding in self._bindings() if binding.get("behavior_id", "") == behavior["id"]]
 
     def _restore_list_selection(self, widget: tk.Listbox, ids: list[str], attr_name: str) -> None:
         current = getattr(self, attr_name)
@@ -342,7 +331,6 @@ class SettingsApp:
         self._refresh_tree()
         self._refresh_prompt_list()
         self._refresh_behavior_list()
-        self._refresh_binding_list()
         self._refresh_behavior_combo_options()
 
     def _refresh_tree(self) -> None:
@@ -378,22 +366,24 @@ class SettingsApp:
         self._load_prompt_selection()
 
     def _refresh_behavior_list(self) -> None:
-        self.behavior_list.delete(0, tk.END)
+        self.behavior_tree.delete(*self.behavior_tree.get_children())
         ids: list[str] = []
+        binding_map = {binding.get("behavior_id", ""): binding.get("shortcut", "") for binding in self._bindings()}
         for behavior in self._behaviors():
-            self.behavior_list.insert(tk.END, behavior["name"])
+            shortcut = binding_map.get(behavior["id"], "")
+            shortcut_label = format_shortcut_label(shortcut) if shortcut else "Unbound"
+            self.behavior_tree.insert("", "end", iid=behavior["id"], text=behavior["name"], values=(shortcut_label,))
             ids.append(behavior["id"])
-        self._restore_list_selection(self.behavior_list, ids, "current_behavior_id")
+        if self.current_behavior_id and self.current_behavior_id in ids:
+            self.behavior_tree.selection_set(self.current_behavior_id)
+            self.behavior_tree.focus(self.current_behavior_id)
+        elif ids:
+            self.current_behavior_id = ids[0]
+            self.behavior_tree.selection_set(ids[0])
+            self.behavior_tree.focus(ids[0])
+        else:
+            self.current_behavior_id = ""
         self._load_behavior_selection()
-
-    def _refresh_binding_list(self) -> None:
-        self.binding_list.delete(0, tk.END)
-        ids: list[str] = []
-        for binding in self._bindings_for_current_behavior():
-            self.binding_list.insert(tk.END, format_shortcut_label(binding["shortcut"]))
-            ids.append(binding["id"])
-        self._restore_list_selection(self.binding_list, ids, "current_binding_id")
-        self._load_binding_selection()
 
     def _load_model_selection(self) -> None:
         provider = self._selected_provider()
@@ -441,21 +431,16 @@ class SettingsApp:
             self.behavior_type_var.set("llm_prompt")
             self.behavior_profile_var.set("")
             self.behavior_prompt_var.set("")
+            self.behavior_shortcut_var.set("")
             self._sync_behavior_field_state()
             return
         self.behavior_name_var.set(behavior["name"])
         self.behavior_type_var.set(behavior["type"])
         self.behavior_profile_var.set(self._label_for_value(profile_options, behavior["profile_id"]))
         self.behavior_prompt_var.set(self._label_for_value(prompt_options, behavior["prompt_id"]))
-        self._sync_behavior_field_state()
-        self._refresh_binding_list()
-
-    def _load_binding_selection(self) -> None:
         binding = self._selected_binding()
-        if binding is None:
-            self.binding_shortcut_var.set("")
-            return
-        self.binding_shortcut_var.set(binding["shortcut"])
+        self.behavior_shortcut_var.set(binding["shortcut"] if binding else "")
+        self._sync_behavior_field_state()
 
     def _refresh_behavior_combo_options(self) -> None:
         self.behavior_profile_combo.configure(values=list(self._build_profile_options().keys()))
@@ -497,23 +482,19 @@ class SettingsApp:
             if behavior_type == "llm_prompt" and (not behavior["profile_id"] or not behavior["prompt_id"]):
                 messagebox.showerror("Incomplete Behavior", "LLM behaviors require both a model and a prompt.")
                 return False
-
-        binding = self._selected_binding()
-        if binding is not None:
-            shortcut = normalize_shortcut(self.binding_shortcut_var.get())
-            if not shortcut:
-                messagebox.showerror("Invalid Shortcut", "Use shortcuts like F1, F1+1, or F1+Q.")
-                return False
-            behavior = self._selected_behavior()
-            if behavior is None:
-                messagebox.showerror("Missing Behavior", "Please select a behavior first.")
-                return False
-            for other in self._bindings():
-                if other["id"] != binding["id"] and other["shortcut"] == shortcut:
-                    messagebox.showerror("Duplicate Shortcut", f"Shortcut '{shortcut}' is already bound.")
-                    return False
-            binding["shortcut"] = shortcut
-            binding["behavior_id"] = behavior["id"]
+            shortcut = normalize_shortcut(self.behavior_shortcut_var.get())
+            existing_binding = self._selected_binding()
+            if shortcut:
+                for other in self._bindings():
+                    if other.get("behavior_id", "") != behavior["id"] and other["shortcut"] == shortcut:
+                        messagebox.showerror("Duplicate Shortcut", f"Shortcut '{shortcut}' is already bound.")
+                        return False
+                if existing_binding is None:
+                    self._bindings().append({"id": make_id("binding"), "shortcut": shortcut, "behavior_id": behavior["id"]})
+                else:
+                    existing_binding["shortcut"] = shortcut
+            elif existing_binding is not None:
+                self.config["shortcut_bindings"] = [item for item in self._bindings() if item["behavior_id"] != behavior["id"]]
 
         return True
 
@@ -549,27 +530,30 @@ class SettingsApp:
         self._load_prompt_selection()
 
     def _on_behavior_selected(self) -> None:
-        selection = self.behavior_list.curselection()
+        selection = self.behavior_tree.selection()
         if not selection:
             return
-        new_id = self._behaviors()[selection[0]]["id"]
+        new_id = selection[0]
         if self.current_behavior_id and self.current_behavior_id != new_id and not self._commit_current_form_to_draft():
             self._refresh_behavior_list()
             return
         self.current_behavior_id = new_id
         self._load_behavior_selection()
 
-    def _on_binding_selected(self) -> None:
-        selection = self.binding_list.curselection()
-        if not selection:
+    def _on_behavior_tree_click(self, event: tk.Event) -> None:
+        row_id = self.behavior_tree.identify_row(event.y)
+        column_id = self.behavior_tree.identify_column(event.x)
+        if not row_id or column_id != "#1":
             return
-        current_bindings = self._bindings_for_current_behavior()
-        new_id = current_bindings[selection[0]]["id"]
-        if self.current_binding_id and self.current_binding_id != new_id and not self._commit_current_form_to_draft():
-            self._refresh_binding_list()
+        if self.current_behavior_id and self.current_behavior_id != row_id and not self._commit_current_form_to_draft():
+            self._refresh_behavior_list()
             return
-        self.current_binding_id = new_id
-        self._load_binding_selection()
+        self.current_behavior_id = row_id
+        self.behavior_tree.selection_set(row_id)
+        self.behavior_tree.focus(row_id)
+        self._load_behavior_selection()
+        self.behavior_shortcut_entry.focus_set()
+        self.behavior_shortcut_entry.selection_range(0, tk.END)
 
     def _add_provider(self) -> None:
         if not self._commit_current_form_to_draft():
@@ -592,8 +576,6 @@ class SettingsApp:
             "name": f"Model {len(provider['models']) + 1}",
             "enabled": True,
             "timeout_ms": 30000,
-            "system_prompt": DEFAULT_SYSTEM_PROMPT,
-            "user_prompt_template": DEFAULT_USER_PROMPT_TEMPLATE,
         }
         provider["models"].append(model)
         self.current_model_selection = f"model:{provider['id']}::{model['id']}"
@@ -651,7 +633,6 @@ class SettingsApp:
         behavior = {"id": make_id("behavior"), "name": f"Behavior {len(self._behaviors()) + 1}", "type": "llm_prompt", "profile_id": "", "prompt_id": ""}
         self._behaviors().append(behavior)
         self.current_behavior_id = behavior["id"]
-        self.current_binding_id = ""
         self._mark_dirty("Behavior added.")
         self._refresh_all()
 
@@ -663,42 +644,13 @@ class SettingsApp:
         if behavior["id"] in {"behavior-show-shortcuts", "behavior-edge-translate"}:
             messagebox.showerror("Delete Behavior", "Built-in behaviors cannot be deleted.")
             return
-        if any(binding.get("behavior_id", "") == behavior["id"] for binding in self._bindings()):
-            messagebox.showerror("Delete Behavior", "This behavior is still used by a shortcut binding.")
-            return
         if not messagebox.askyesno("Delete Behavior", f"Delete behavior '{behavior['name']}'?"):
             return
         self.config["behavior_library"] = [item for item in self._behaviors() if item["id"] != behavior["id"]]
         self.config["shortcut_bindings"] = [item for item in self._bindings() if item.get("behavior_id", "") != behavior["id"]]
         self.current_behavior_id = ""
-        self.current_binding_id = ""
         self._mark_dirty("Behavior deleted.")
         self._refresh_all()
-
-    def _add_binding(self) -> None:
-        if not self._commit_current_form_to_draft():
-            return
-        behavior = self._selected_behavior()
-        if behavior is None:
-            messagebox.showinfo("Add Binding", "Please select a behavior first.")
-            return
-        binding = {"id": make_id("binding"), "shortcut": "", "behavior_id": behavior["id"]}
-        self._bindings().append(binding)
-        self.current_binding_id = binding["id"]
-        self._mark_dirty("Binding added.")
-        self._refresh_binding_list()
-
-    def _delete_binding(self) -> None:
-        binding = self._selected_binding()
-        if binding is None:
-            messagebox.showinfo("Delete Binding", "Please select a binding first.")
-            return
-        if not messagebox.askyesno("Delete Binding", f"Delete binding '{format_shortcut_label(binding['shortcut'])}'?"):
-            return
-        self.config["shortcut_bindings"] = [item for item in self._bindings() if item["id"] != binding["id"]]
-        self.current_binding_id = ""
-        self._mark_dirty("Binding deleted.")
-        self._refresh_binding_list()
 
     def _save_all_changes(self) -> None:
         if not self._commit_current_form_to_draft():
@@ -718,7 +670,7 @@ class SettingsApp:
             return
         choice = messagebox.askyesnocancel(
             "Unsaved Changes",
-            "You have unsaved model, prompt, behavior, or binding changes.\n\nYes: save and close\nNo: discard and close\nCancel: stay here",
+            "You have unsaved model, prompt, behavior, or shortcut changes.\n\nYes: save and close\nNo: discard and close\nCancel: stay here",
         )
         if choice is None:
             return

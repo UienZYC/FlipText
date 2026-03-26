@@ -235,14 +235,16 @@ def _normalize_bindings(config: dict[str, Any]) -> None:
     bindings = config.setdefault("shortcut_bindings", [])
     behavior_ids = {behavior["id"] for behavior in config.get("behavior_library", [])}
     used_shortcuts: set[str] = set()
+    used_behaviors: set[str] = set()
     normalized: list[dict[str, Any]] = []
 
     for binding in bindings:
         shortcut = normalize_shortcut(binding.get("shortcut", ""))
         behavior_id = str(binding.get("behavior_id", "")).strip()
-        if not shortcut or behavior_id not in behavior_ids or shortcut in used_shortcuts:
+        if not shortcut or behavior_id not in behavior_ids or shortcut in used_shortcuts or behavior_id in used_behaviors:
             continue
         used_shortcuts.add(shortcut)
+        used_behaviors.add(behavior_id)
         normalized.append(
             {
                 "id": binding.get("id") or make_id("binding"),

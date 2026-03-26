@@ -66,43 +66,29 @@
   Co-authored with LLMs
 </p>
 
-## LLM Translation Config
-FlipText now supports an optional OpenAI-compatible LLM translation engine in addition to the existing Edge-based translation flow.
+## LLM Settings
+FlipText now supports an optional Python-backed LLM translation engine in addition to the original Edge-based translation flow.
 
-Configuration lives in `FlipText.ini` beside the script or compiled executable.
+Users no longer need to maintain provider keys and model selections in a repo-side INI file. Instead:
 
-Example:
+- provider, key, and model settings are managed through the `Settings` window from the tray menu
+- configuration is stored in a user-local config file under your Windows roaming profile
+- the tray menu lets you switch `Edge` / `LLM` and quickly switch active LLM models
+- if the selected LLM configuration fails, FlipText automatically falls back to the original Edge translation
 
-```ini
-[General]
-engine=edge
-active_profile=default
+The LLM path keeps AutoHotkey for:
 
-[LLM.default]
-enabled=false
-base_url=
-api_key=
-model=
-timeout_ms=15000
-system_prompt=You are a professional translator. Translate the user's text accurately and naturally. Return only the translated text. Preserve line breaks, formatting, and tone. Do not add explanations, quotation marks, notes, or extra text.
+- hotkey capture
+- popup UI
+- `Tab` replacement/insert
+- Edge fallback
 
-[LLM.second]
-enabled=true
-base_url=
-api_key=
-model=
-timeout_ms=15000
-system_prompt=You are a professional translator. Translate the user's text accurately and naturally. Return only the translated text. Preserve line breaks, formatting, and tone. Do not add explanations, quotation marks, notes, or extra text.
-```
+Python handles:
 
-Notes:
-- Set `engine=llm` to make `F1` use the LLM backend.
-- Set `active_profile` to choose which `[LLM.profile_name]` section is active.
-- If the LLM config is incomplete or the request fails, FlipText automatically falls back to the original Edge translation.
-- The tray menu also lets you switch between `Edge` and `LLM`, switch among configured LLM profiles, reload config, and open the config file quickly.
-
-## Python LLM Bridge
-The LLM path now uses a Python helper, while AutoHotkey still handles hotkeys, popup UI, replacement, and Edge fallback.
+- provider/model configuration
+- API calls
+- per-model timeout settings
+- response parsing
 
 One-time local setup:
 
@@ -110,4 +96,4 @@ One-time local setup:
 uv sync
 ```
 
-After that, run `FlipText.ahk` as usual. When `engine=llm`, the script calls the Python bridge through `uv run`.
+After that, run `FlipText.ahk`, open `Settings` from the tray menu, add a provider, paste the API key, add one or more models, and set the active model.

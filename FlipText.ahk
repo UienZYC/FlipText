@@ -18,9 +18,10 @@ global G_STATE := {
 global TransGui := ""
 global TransSourceCtrl := ""
 global TransBodyCtrl := ""
-global CONFIG_PATH := A_ScriptDir "\FlipText.ini"
 global LOG_PATH := A_ScriptDir "\FlipText.log"
 global PROFILE_MENU := Menu()
+global CONFIG_SUMMARY := ""
+global CONFIG_LAST_MTIME := ""
 
 SetupTrayMenu()
 
@@ -46,7 +47,6 @@ F1::
             Send "{End}"
             Sleep 15
             Send "+{Home}"
-
             Sleep 50
             Send "^c"
             ClipWait(0.15)
@@ -69,22 +69,19 @@ F1::
         return
     }
 
-    if (TransGui) {
-        TransGui.Destroy()
-        TransGui := ""
-    }
-
+    ClearPopup()
     StartTranslation(targetText)
 }
 
 StartTranslation(text) {
+    summary := LoadConfigSummary()
+
     try {
-        config := LoadGeneralConfig()
-        if (config["engine"] = "llm") {
-            StartLoadingState(config["active_profile"])
+        if (summary.engine = "llm" && summary.active_profile_id != "") {
+            StartLoadingState(summary.active_profile_label, summary.active_timeout_ms)
 
             try {
-                result := PythonTranslate(text, config["active_profile"])
+                result := PythonTranslate(text, summary.active_profile_id)
                 StopLoadingState()
                 G_STATE.Result := result["text"]
                 G_STATE.Source := result["source"]
@@ -92,7 +89,8 @@ StartTranslation(text) {
                 StopLoadingState()
                 LogDebug("LLM translation failed. " err.Message)
                 G_STATE.Result := EdgeTranslate(text)
-                G_STATE.Source := "Edge fallback: " config["active_profile"]
+                fallbackLabel := (summary.active_profile_label != "") ? summary.active_profile_label : "LLM"
+                G_STATE.Source := "Edge fallback: " fallbackLabel
             }
         } else {
             G_STATE.LastDurationMs := 0
@@ -108,7 +106,8 @@ StartTranslation(text) {
         Hotkey "Esc", ClearUI, "On"
 
         UpdateTransGui(G_STATE.Result)
-    } catch {
+    } catch as err {
+        LogDebug("Translation Error. " err.Message)
         UpdateTransGui("Translation Error")
         SetTimer(ClearUI, -2000)
     }
@@ -117,12 +116,7 @@ StartTranslation(text) {
 UpdateTransGui(newStr) {
     global TransGui, TransSourceCtrl, TransBodyCtrl, G_STATE
 
-    if (TransGui) {
-        TransGui.Destroy()
-        TransGui := ""
-        TransSourceCtrl := ""
-        TransBodyCtrl := ""
-    }
+    ClearPopup()
 
     TransGui := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")
     TransGui.BackColor := "FFFFE1"
@@ -145,6 +139,36 @@ UpdateTransGui(newStr) {
 
     TransGui.Show("x" G_STATE.X " y" G_STATE.Y " NoActivate AutoSize")
     WinSetTransparent(200, TransGui)
+}
+
+ShowLoadingGui() {
+    global TransGui, TransSourceCtrl, TransBodyCtrl, G_STATE
+
+    ClearPopup()
+
+    TransGui := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")
+    TransGui.BackColor := "FFFFE1"
+
+    TransGui.SetFont("s9", "Microsoft YaHei")
+    TransSourceCtrl := TransGui.Add("Text", "c666666", "Source: " G_STATE.Source)
+
+    TransGui.SetFont("s11 w700", "Microsoft YaHei")
+    TransBodyCtrl := TransGui.Add("Text", "c003366 w360", "")
+
+    UpdateLoadingGui()
+    TransGui.Show("x" G_STATE.X " y" G_STATE.Y " NoActivate AutoSize")
+    WinSetTransparent(200, TransGui)
+}
+
+ClearPopup() {
+    global TransGui, TransSourceCtrl, TransBodyCtrl
+
+    if (TransGui) {
+        TransGui.Destroy()
+        TransGui := ""
+    }
+    TransSourceCtrl := ""
+    TransBodyCtrl := ""
 }
 
 DoReplace(*) {
@@ -188,14 +212,9 @@ DoReplace(*) {
 }
 
 ClearUI(*) {
-    global TransGui, TransSourceCtrl, TransBodyCtrl, G_STATE
+    global G_STATE
     StopLoadingState()
-    if (TransGui) {
-        TransGui.Destroy()
-        TransGui := ""
-    }
-    TransSourceCtrl := ""
-    TransBodyCtrl := ""
+    ClearPopup()
     G_STATE.Source := ""
     G_STATE.LastDurationMs := 0
 
@@ -206,13 +225,13 @@ ClearUI(*) {
 
 MarkAsMoved(*) => G_STATE.IsMoved := true
 
-StartLoadingState(profileName) {
+StartLoadingState(profileLabel, timeoutMs) {
     global G_STATE
 
-    G_STATE.Source := "LLM: " profileName
+    G_STATE.Source := "LLM: " profileLabel
     G_STATE.IsLoading := true
     G_STATE.LoadingStartedAt := A_TickCount
-    G_STATE.LoadingTimeoutMs := LoadProfileTimeoutMs(profileName)
+    G_STATE.LoadingTimeoutMs := timeoutMs
     G_STATE.LastDurationMs := 0
     ShowLoadingGui()
     SetTimer(UpdateLoadingGui, 250)
@@ -250,70 +269,334 @@ UpdateLoadingGui() {
         TransBodyCtrl.Text := text
 }
 
-ShowLoadingGui() {
-    global TransGui, TransSourceCtrl, TransBodyCtrl, G_STATE
-
-    if (TransGui) {
-        TransGui.Destroy()
-        TransGui := ""
-    }
-
-    TransGui := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20")
-    TransGui.BackColor := "FFFFE1"
-
-    TransGui.SetFont("s9", "Microsoft YaHei")
-    TransSourceCtrl := TransGui.Add("Text", "c666666", "Source: " G_STATE.Source)
-
-    TransGui.SetFont("s11 w700", "Microsoft YaHei")
-    TransBodyCtrl := TransGui.Add("Text", "c003366 w360", "")
-
-    UpdateLoadingGui()
-    TransGui.Show("x" G_STATE.X " y" G_STATE.Y " NoActivate AutoSize")
-    WinSetTransparent(200, TransGui)
-}
-
-PythonTranslate(text, profileName) {
-    global CONFIG_PATH, LOG_PATH
-
+PythonTranslate(text, profileId) {
     tempDir := A_Temp "\FlipText"
     if !DirExist(tempDir)
         DirCreate(tempDir)
 
     inputPath := tempDir "\llm_input.txt"
     outputPath := tempDir "\llm_output.json"
-
     try FileDelete(inputPath)
     try FileDelete(outputPath)
 
     FileAppend(text, inputPath, "UTF-8")
 
-    pythonPath := A_ScriptDir "\.venv\Scripts\python.exe"
-    if !FileExist(pythonPath) {
-        throw Error("Python environment not found at " pythonPath ". Run uv sync first.")
-    }
+    args := "--profile-id " QuoteArg(profileId)
+        . " --text-file " QuoteArg(inputPath)
+        . " --result-file " QuoteArg(outputPath)
+        . " --log-file " QuoteArg(LOG_PATH)
+    exitCode := RunPythonWait("llm_translate.py", args)
 
-    cmd := A_ComSpec ' /C ""' pythonPath '" "' A_ScriptDir '\llm_translate.py" --config "' CONFIG_PATH '" --profile "' profileName '" --text-file "' inputPath '" --result-file "' outputPath '" --log-file "' LOG_PATH '""'
-    exitCode := RunWait(cmd, A_ScriptDir, "Hide")
-    if !FileExist(outputPath) {
+    if !FileExist(outputPath)
         throw Error("Python translator did not produce output. Exit code " exitCode ".")
-    }
 
     result := JSON_Parse(FileRead(outputPath, "UTF-8"))
-    if !result.ok {
+    if !result.ok
         throw Error(result.error)
-    }
 
     translated := result.text
-    if (Trim(translated, " `t`r`n") = "") {
+    if (Trim(translated, " `t`r`n") = "")
         throw Error("Python translator returned empty text.")
+
+    return Map("text", translated, "source", result.source)
+}
+
+SetupTrayMenu() {
+    A_TrayMenu.Add()
+    A_TrayMenu.Add("Settings", OpenSettings)
+    A_TrayMenu.Add("Use Edge Translation", SetEngineEdge)
+    A_TrayMenu.Add("Use LLM Translation", SetEngineLLM)
+    A_TrayMenu.Add("LLM Models", PROFILE_MENU)
+    A_TrayMenu.Add("Reload Config", ReloadConfigFromMenu)
+    UpdateTrayChecks()
+    SetTimer(WatchConfigChanges, 1000)
+}
+
+UpdateTrayChecks() {
+    global CONFIG_SUMMARY, CONFIG_LAST_MTIME
+
+    CONFIG_SUMMARY := LoadConfigSummary()
+    try CONFIG_LAST_MTIME := FileGetTime(UserConfigPath(), "M")
+
+    try A_TrayMenu.Uncheck("Use Edge Translation")
+    try A_TrayMenu.Uncheck("Use LLM Translation")
+
+    if (CONFIG_SUMMARY.engine = "llm")
+        A_TrayMenu.Check("Use LLM Translation")
+    else
+        A_TrayMenu.Check("Use Edge Translation")
+
+    RebuildProfileMenu(CONFIG_SUMMARY)
+}
+
+RebuildProfileMenu(summary) {
+    global PROFILE_MENU
+
+    try PROFILE_MENU.Delete()
+
+    for _, profile in GetSummaryProfiles(summary) {
+        label := profile.label
+        if !profile.enabled
+            label .= " [Disabled]"
+        PROFILE_MENU.Add(label, SelectLLMProfile)
+        if (profile.id = summary.active_profile_id)
+            PROFILE_MENU.Check(label)
     }
 
-    source := result.source
-    if (source = "") {
-        source := "LLM: " profileName
+    if (GetSummaryProfiles(summary).Length = 0)
+        PROFILE_MENU.Add("(No models configured)", NoOpMenu)
+}
+
+NoOpMenu(*) {
+}
+
+SelectLLMProfile(itemName, *) {
+    summary := CONFIG_SUMMARY
+    for _, profile in GetSummaryProfiles(summary) {
+        label := profile.label
+        if !profile.enabled
+            label .= " [Disabled]"
+        if (label = itemName) {
+            SetActiveProfile(profile.id)
+            return
+        }
+    }
+}
+
+SetActiveProfile(profileId) {
+    RunConfigCli("set-active-profile", "--profile-id " QuoteArg(profileId))
+    UpdateTrayChecks()
+    ToolTip "Active model updated"
+    SetTimer () => ToolTip(), -1000
+}
+
+SetEngineEdge(*) {
+    SetEngine("edge")
+}
+
+SetEngineLLM(*) {
+    SetEngine("llm")
+}
+
+SetEngine(engine) {
+    RunConfigCli("set-engine", "--engine " QuoteArg(engine))
+    UpdateTrayChecks()
+    ToolTip "Translation engine: " ((engine = "llm") ? "LLM" : "Edge")
+    SetTimer () => ToolTip(), -1000
+}
+
+ReloadConfigFromMenu(*) {
+    UpdateTrayChecks()
+    ToolTip "Config reloaded"
+    SetTimer () => ToolTip(), -1000
+}
+
+WatchConfigChanges() {
+    global CONFIG_LAST_MTIME
+
+    configPath := UserConfigPath()
+    currentMtime := ""
+    try currentMtime := FileGetTime(configPath, "M")
+    catch
+        currentMtime := ""
+
+    if (currentMtime = "")
+        return
+
+    if (CONFIG_LAST_MTIME = "") {
+        CONFIG_LAST_MTIME := currentMtime
+        return
     }
 
-    return Map("text", translated, "source", source)
+    if (currentMtime != CONFIG_LAST_MTIME) {
+        CONFIG_LAST_MTIME := currentMtime
+        UpdateTrayChecks()
+    }
+}
+
+OpenSettings(*) {
+    LaunchPython("settings_app.py", "")
+}
+
+LoadConfigSummary() {
+    tempDir := A_Temp "\FlipText"
+    if !DirExist(tempDir)
+        DirCreate(tempDir)
+
+    resultPath := tempDir "\config_summary.json"
+    try FileDelete(resultPath)
+
+    try {
+        exitCode := RunPythonWait("config_cli.py", "summary --result-file " QuoteArg(resultPath))
+    } catch as err {
+        LogDebug("Failed to run config summary command. " err.Message)
+        return DefaultSummary()
+    }
+
+    if !FileExist(resultPath) {
+        LogDebug("Failed to load config summary. Exit code " exitCode ".")
+        return DefaultSummary()
+    }
+
+    try {
+        return ParseSummaryText(FileRead(resultPath, "UTF-8"))
+    } catch as err {
+        LogDebug("Invalid config summary text. " err.Message)
+        return DefaultSummary()
+    }
+}
+
+UserConfigPath() {
+    appData := EnvGet("APPDATA")
+    if (appData = "")
+        throw Error("APPDATA is not available.")
+    return appData "\FlipText\config.json"
+}
+
+DefaultSummary() {
+    return {
+        engine: "edge",
+        active_profile_id: "",
+        active_profile_label: "",
+        active_timeout_ms: 30000,
+        profiles: []
+    }
+}
+
+ParseSummaryText(text) {
+    summary := DefaultSummary()
+    profiles := []
+
+    for _, rawLine in StrSplit(text, "`n", "`r") {
+        line := Trim(rawLine)
+        if (line = "")
+            continue
+
+        pos := InStr(line, "=")
+        if (pos <= 0)
+            continue
+
+        key := SubStr(line, 1, pos - 1)
+        value := SubStr(line, pos + 1)
+
+        if (key = "ok") {
+            if (value != "1")
+                throw Error("summary command returned failure")
+        } else if (key = "error") {
+            throw Error(UnescapeSummaryValue(value))
+        } else if (key = "engine") {
+            summary.engine := UnescapeSummaryValue(value)
+        } else if (key = "active_profile_id") {
+            summary.active_profile_id := UnescapeSummaryValue(value)
+        } else if (key = "active_profile_label") {
+            summary.active_profile_label := UnescapeSummaryValue(value)
+        } else if (key = "active_timeout_ms") {
+            summary.active_timeout_ms := IntegerOrDefault(value, 30000)
+        } else if (key = "profile") {
+            parts := SplitEscapedProfile(value)
+            if (parts.Length >= 4) {
+                profiles.Push({
+                    id: UnescapeSummaryValue(parts[1]),
+                    label: UnescapeSummaryValue(parts[2]),
+                    enabled: (parts[3] = "1"),
+                    timeout_ms: IntegerOrDefault(parts[4], 30000)
+                })
+            }
+        }
+    }
+
+    summary.profiles := profiles
+    return summary
+}
+
+SplitEscapedProfile(value) {
+    parts := []
+    current := ""
+    escaping := false
+
+    Loop Parse, value {
+        ch := A_LoopField
+        if escaping {
+            current .= "\" ch
+            escaping := false
+            continue
+        }
+        if (ch = "\") {
+            escaping := true
+            continue
+        }
+        if (ch = "|") {
+            parts.Push(current)
+            current := ""
+            continue
+        }
+        current .= ch
+    }
+
+    parts.Push(current)
+    return parts
+}
+
+UnescapeSummaryValue(value) {
+    value := StrReplace(value, "\\n", "`n")
+    value := StrReplace(value, "\\p", "|")
+    value := StrReplace(value, "\\e", "=")
+    value := StrReplace(value, "\\\\", "\")
+    return value
+}
+
+IntegerOrDefault(value, defaultValue) {
+    if RegExMatch(Trim(value), "^\d+$")
+        return value + 0
+    return defaultValue
+}
+
+GetSummaryProfiles(summary) {
+    try return summary.profiles
+    catch
+        return []
+}
+
+RunConfigCli(command, args) {
+    exitCode := RunPythonWait("config_cli.py", command " " args)
+    if (exitCode != 0)
+        throw Error("Config command failed: " command)
+}
+
+RunPythonWait(scriptName, args) {
+    pythonPath := PythonExePath()
+    scriptPath := A_ScriptDir "\" scriptName
+    cmd := QuoteArg(pythonPath) " " QuoteArg(scriptPath)
+    if (args != "")
+        cmd .= " " args
+    return RunWait(cmd, A_ScriptDir, "Hide")
+}
+
+LaunchPython(scriptName, args) {
+    pythonPath := PythonGuiExePath()
+    scriptPath := A_ScriptDir "\" scriptName
+    cmd := QuoteArg(pythonPath) " " QuoteArg(scriptPath)
+    if (args != "")
+        cmd .= " " args
+    Run cmd, A_ScriptDir, "Hide"
+}
+
+PythonExePath() {
+    pythonPath := A_ScriptDir "\.venv\Scripts\python.exe"
+    if !FileExist(pythonPath)
+        throw Error("Python environment not found at " pythonPath ". Run uv sync first.")
+    return pythonPath
+}
+
+PythonGuiExePath() {
+    pythonwPath := A_ScriptDir "\.venv\Scripts\pythonw.exe"
+    if FileExist(pythonwPath)
+        return pythonwPath
+    return PythonExePath()
+}
+
+QuoteArg(value) {
+    return '"' StrReplace(value, '"', '\"') '"'
 }
 
 EdgeTranslate(text) {
@@ -345,200 +628,7 @@ EdgeTranslate(text) {
     return "Error"
 }
 
-SetupTrayMenu() {
-    EnsureConfigFile()
-    A_TrayMenu.Add()
-    A_TrayMenu.Add("Use Edge Translation", SetEngineEdge)
-    A_TrayMenu.Add("Use LLM Translation", SetEngineLLM)
-    A_TrayMenu.Add("LLM Profiles", PROFILE_MENU)
-    A_TrayMenu.Add("Reload Config", ReloadConfigFromMenu)
-    A_TrayMenu.Add("Open Config", OpenConfigFile)
-    UpdateTrayChecks()
-}
-
-UpdateTrayChecks() {
-    config := LoadGeneralConfig()
-
-    try A_TrayMenu.Uncheck("Use Edge Translation")
-    try A_TrayMenu.Uncheck("Use LLM Translation")
-
-    if (config["engine"] = "llm")
-        A_TrayMenu.Check("Use LLM Translation")
-    else
-        A_TrayMenu.Check("Use Edge Translation")
-
-    RebuildProfileMenu(config["active_profile"])
-}
-
-RebuildProfileMenu(activeProfile) {
-    global PROFILE_MENU
-
-    try PROFILE_MENU.Delete()
-
-    for _, profileName in GetProfileNames() {
-        PROFILE_MENU.Add(profileName, SelectLLMProfile)
-        if (profileName = activeProfile)
-            PROFILE_MENU.Check(profileName)
-    }
-}
-
-SelectLLMProfile(profileName, *) {
-    SetActiveProfile(profileName)
-}
-
-SetActiveProfile(profileName) {
-    global CONFIG_PATH
-
-    IniWrite(NormalizeProfileName(profileName), CONFIG_PATH, "General", "active_profile")
-    UpdateTrayChecks()
-    ToolTip "LLM profile: " profileName
-    SetTimer () => ToolTip(), -1000
-}
-
-SetEngineEdge(*) {
-    SetEngine("edge")
-}
-
-SetEngineLLM(*) {
-    SetEngine("llm")
-}
-
-SetEngine(engine) {
-    global CONFIG_PATH
-
-    IniWrite(engine, CONFIG_PATH, "General", "engine")
-    UpdateTrayChecks()
-    ToolTip "Translation engine: " ((engine = "llm") ? "LLM" : "Edge")
-    SetTimer () => ToolTip(), -1000
-}
-
-ReloadConfigFromMenu(*) {
-    UpdateTrayChecks()
-    ToolTip "Config reloaded"
-    SetTimer () => ToolTip(), -1000
-}
-
-OpenConfigFile(*) {
-    global CONFIG_PATH
-    Run CONFIG_PATH
-}
-
-LoadGeneralConfig() {
-    EnsureConfigFile()
-
-    config := Map()
-    config["engine"] := NormalizeEngine(ReadIniValue("General", "engine", "edge"))
-    config["active_profile"] := NormalizeProfileName(ReadIniValue("General", "active_profile", "default"))
-
-    profileNames := GetProfileNames()
-    if !ProfileExists(config["active_profile"], profileNames)
-        config["active_profile"] := profileNames[1]
-
-    return config
-}
-
-LoadProfileTimeoutMs(profileName) {
-    timeoutValue := ReadProfileValue(profileName, "timeout_ms", "30000")
-    return NormalizeTimeout(timeoutValue, 30000)
-}
-
-GetProfileNames() {
-    global CONFIG_PATH
-
-    profiles := []
-    seen := Map()
-
-    if FileExist(CONFIG_PATH) {
-        configText := FileRead(CONFIG_PATH, "UTF-8")
-        pos := 1
-        while RegExMatch(configText, "m)^\[LLM\.([^\]\r\n]+)\]$", &m, pos) {
-            profileName := NormalizeProfileName(m[1])
-            if (profileName != "" && !seen.Has(profileName)) {
-                profiles.Push(profileName)
-                seen[profileName] := true
-            }
-            pos := m.Pos + m.Len
-        }
-
-        if RegExMatch(configText, "m)^\[LLM\]$") && !seen.Has("default")
-            profiles.Push("default")
-    }
-
-    if (profiles.Length = 0)
-        profiles.Push("default")
-
-    return profiles
-}
-
-ProfileExists(profileName, profileNames) {
-    for _, item in profileNames {
-        if (item = profileName)
-            return true
-    }
-    return false
-}
-
-EnsureConfigFile() {
-    global CONFIG_PATH
-
-    if FileExist(CONFIG_PATH)
-        return
-
-    IniWrite("edge", CONFIG_PATH, "General", "engine")
-    IniWrite("default", CONFIG_PATH, "General", "active_profile")
-    IniWrite("false", CONFIG_PATH, "LLM.default", "enabled")
-    IniWrite("https://api.openai.com/v1", CONFIG_PATH, "LLM.default", "base_url")
-    IniWrite("", CONFIG_PATH, "LLM.default", "api_key")
-    IniWrite("", CONFIG_PATH, "LLM.default", "model")
-    IniWrite("15000", CONFIG_PATH, "LLM.default", "timeout_ms")
-    IniWrite("You are a professional translator. Translate the user's text accurately and naturally. Return only the translated text. Preserve line breaks, formatting, and tone. Do not add explanations, quotation marks, notes, or extra text.", CONFIG_PATH, "LLM.default", "system_prompt")
-}
-
-ReadIniValue(section, key, defaultValue) {
-    global CONFIG_PATH
-
-    try {
-        return IniRead(CONFIG_PATH, section, key, defaultValue)
-    } catch {
-        return defaultValue
-    }
-}
-
-ReadProfileValue(profileName, key, defaultValue) {
-    profileName := NormalizeProfileName(profileName)
-    value := ReadIniValue("LLM." profileName, key, "__MISSING__")
-    if (value != "__MISSING__")
-        return value
-    return ReadIniValue("LLM", key, defaultValue)
-}
-
-NormalizeEngine(value) {
-    value := StrLower(Trim(value))
-    return (value = "llm") ? "llm" : "edge"
-}
-
-NormalizeTimeout(value, defaultValue := 15000) {
-    value := Trim(value)
-    if !RegExMatch(value, "^\d+$")
-        return defaultValue
-
-    timeout := value + 0
-    if (timeout < 1000)
-        return defaultValue
-
-    return timeout
-}
-
-NormalizeProfileName(value) {
-    value := Trim(value)
-    if (value = "")
-        return "default"
-    return RegExReplace(value, "[\[\]\r\n]", "")
-}
-
 LogDebug(message) {
-    global LOG_PATH
-
     timestamp := FormatTime(, "yyyy-MM-dd HH:mm:ss")
     FileAppend(timestamp " " message "`n", LOG_PATH, "UTF-8")
 }

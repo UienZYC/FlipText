@@ -1,5 +1,5 @@
 testground/
-releases/
+release/
 .vscode/
 
 *.exe
@@ -12,3 +12,7 @@ __pycache__/
 
 *.log
 *.error.log
+
+build/
+dist/
+*.spec

@@ -63,83 +63,156 @@
 
 
 <p align="left">
-  Co-authored with LLMs
+  由 LLM 协作完成
 </p>
 
-## LLM Settings
-FlipText now supports an optional Python-backed LLM translation engine in addition to the original Edge-based translation flow.
+## 当前实现说明
 
-Users no longer need to maintain provider keys and model selections in a repo-side INI file. Instead:
+FlipText 是一个基于 AutoHotkey v2 的 Windows 文本翻译辅助工具。AutoHotkey 负责全局快捷键、文本捕获、弹窗展示，以及按 `Tab` 后的替换或插入行为；Python 则作为本地辅助层，负责配置管理、设置窗口，以及可选的 OpenAI 兼容 LLM 请求。
 
-- provider, key, and model settings are managed through the `Settings` window from the tray menu
-- configuration is stored in a user-local config file under your Windows roaming profile
-- the tray menu lets you switch `Edge` / `LLM` and quickly switch active LLM models
-- if the selected LLM configuration fails, FlipText automatically falls back to the original Edge translation
+当前代码支持两类翻译行为：
 
-The LLM path keeps AutoHotkey for:
+- `Edge Translate`：AutoHotkey 直接调用 Edge/Microsoft Translator 相关接口。
+- `LLM prompt`：AutoHotkey 调用 `llm_translate.py`，将选中的文本发送给已配置的 OpenAI 兼容服务商和提示词。
 
-- hotkey capture
-- popup UI
-- `Tab` replacement/insert
-- Edge fallback
+LLM 翻译失败时不会自动回退到 Edge 翻译。如果 LLM 请求失败，FlipText 会显示错误弹窗，并将详细信息写入 `%APPDATA%\FlipText\FlipText.log`。
 
-Python handles:
+## 普通用户：下载和使用
 
-- provider/model configuration
-- API calls
-- per-model timeout settings
-- customizable system prompts and user prompt templates
-- response parsing
+请从 GitHub Release 下载发布包，例如：
 
-One-time local setup:
+```text
+FlipText-v1.1.1-win-x64.zip
+```
+
+解压后运行其中的 `FlipText.exe` 即可。发布包内会包含 Python 辅助程序：
+
+```text
+FlipText.exe
+helpers/
+  FlipTextHelper.exe
+  _internal/
+README.md
+LICENSE
+```
+
+普通用户不需要安装 Python、uv 或 AutoHotkey。建议将发布包解压到用户目录下，例如桌面、下载目录或其他自己有写入权限的位置。
+
+## 开发者：源码运行
+
+源码运行要求：
+
+- Windows
+- AutoHotkey v2
+- Python 3.11 或更高版本
+- `uv`
+
+在项目目录中执行一次以下命令，安装 Python 辅助组件依赖：
 
 ```powershell
 uv sync
 ```
 
-After that, run `FlipText.ahk`, open `Settings` from the tray menu, add a provider, paste the API key, add one or more models, and set the active model.
+然后运行 AutoHotkey 脚本：
 
-Each LLM model can now customize both parts of the conversation sent to the API:
+```powershell
+FlipText.ahk
+```
 
-- `System prompt`: the instruction that defines the model's role and output rules
-- `User prompt template`: the request body built for each translation
+源码运行时，脚本会查找 `.venv\Scripts\python.exe` 和 `.venv\Scripts\pythonw.exe` 作为 Python 运行环境；该环境由 `uv sync` 创建。
 
-The user prompt template supports these placeholders:
+开发者如需构建 GitHub Release 发布包，请参考 [RELEASE.md](RELEASE.md)。
 
+## 运行时入口
+
+发布版运行 `FlipText.exe` 时，主程序会优先调用旁置的：
+
+```text
+helpers\FlipTextHelper.exe
+```
+
+如果 helper 不存在，则回退到源码开发模式，尝试调用 `.venv\Scripts\python.exe` 加仓库中的 Python 脚本。
+
+当前托盘菜单提供：
+
+- `Settings`：打开 Tkinter 设置窗口。
+- `Reload Config`：重新加载用户配置，并重建快捷键绑定。
+
+当前没有用于直接切换 Edge/LLM 模式或切换模型的托盘菜单项。模型选择和快捷键绑定需要在 `Settings` 中管理。
+
+## 默认快捷键
+
+默认配置会创建以下绑定：
+
+- `F1`：显示当前快捷键映射列表。
+- `F1+1`：执行内置的 Edge 翻译行为。
+
+更多快捷键可以在设置窗口的 `Behaviors` 页面中配置。一个快捷键绑定对应一个行为。
+
+翻译结果出现后：
+
+- 按 `Tab` 可替换原选区或当前行文本；如果已经移动到其他输入位置，则会在当前光标处插入译文。
+- 按 `Esc` 可关闭弹窗。
+
+## 设置窗口
+
+设置窗口分为三个页面：
+
+- `Models`：配置服务商、Base URL、API Key、模型、启用状态，以及每个模型的超时时间。
+- `Prompts`：配置可复用提示词，包括 system prompt 和 user prompt template。
+- `Behaviors`：配置具体行为，例如 `Edge Translate`、`Show Shortcuts`，或某个 LLM 模型与提示词的组合，并为这些行为绑定快捷键。
+
+LLM 的 user prompt template 支持以下变量：
+
+- `{text}`
 - `{source_lang}`
 - `{target_lang}`
-- `{text}`
 
-FlipText logs the fully composed system and user prompts for each LLM request to `FlipText.log`, which makes it easier to inspect how each conversation is assembled.
+语言方向由代码按以下规则推导：
 
-## Prompt And Behavior Libraries
+- 如果选中文本包含中文字符，则 `source_lang=zh`，`target_lang=en`。
+- 否则为 `source_lang=en`，`target_lang=zh`。
 
-FlipText now supports three configurable layers:
+## 配置、日志和临时文件
 
-- Prompt library: each prompt defines both the system prompt and the user prompt template
-- Behavior library: each behavior defines what to do, such as `Edge` translation, `Show Shortcuts`, or `selected model + selected prompt`
-- Shortcut bindings: each binding maps a direct hotkey such as `F1`, `F1+1`, `F1+2`, or `F1+Q` to a behavior
+FlipText 不会把用户配置、API Key 或运行日志写入发布包目录。当前代码会在以下非程序所在目录写入文件。
 
-This means users can:
+用户配置保存在 Windows 漫游配置目录下，通常为：
 
-- build a reusable prompt thesaurus
-- build a behavior library by pairing prompts with specific models
-- bind direct shortcut combinations to those behaviors
-- bind a special `Show Shortcuts` behavior to any shortcut to quickly display the current mapping list
+```text
+%APPDATA%\FlipText\config.json
+```
 
-When a prompt runs through an LLM behavior, the prompt editor supports:
+这里会保存 Settings 中配置的 provider、Base URL、API Key、模型、提示词、行为和快捷键绑定。
 
-- `{text}`
-- `{source_lang}`
-- `{target_lang}`
+运行日志写入：
 
-The derivation rule shown in Settings is:
+```text
+%APPDATA%\FlipText\FlipText.log
+```
 
-- if the selected text contains Chinese characters, `source_lang=zh` and `target_lang=en`
-- otherwise, `source_lang=en` and `target_lang=zh`
+日志可能包含 LLM prompt 组装内容、LLM 错误、行为错误、完整提示词和被选中的原文内容。
 
-The Settings UI is organized around three main pages:
+运行过程中的临时中间文件写入：
 
-- `Models`: provider and model configuration only
-- `Prompts`: prompt library with variable help
-- `Behaviors`: behavior definition plus the shortcuts currently bound to each behavior
+```text
+%TEMP%\FlipText\
+```
+
+当前会使用的临时文件包括：
+
+- `llm_input.txt`
+- `llm_output.json`
+- `config_summary.json`
+- `config_summary.json.error.log`（仅在配置摘要命令失败时可能出现）
+
+这些临时文件可能短暂包含被选中的待翻译文本或错误详情。
+
+## 已知限制
+
+- 当前版本仅支持 Windows。
+- FlipText 依赖目标应用支持常见键盘和剪贴板操作，例如 `Ctrl+C`、`Ctrl+V`、`Home` 和 `End`。
+- LLM 请求需要先配置服务商、API Key、模型、提示词和行为绑定。
+- LLM 失败时只显示错误，不会自动通过 Edge 重试。
+- Edge 翻译路径依赖外部 Microsoft/Edge 翻译接口。
+- 当前仓库尚未包含自动化测试或可执行文件构建脚本。

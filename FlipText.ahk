@@ -18,7 +18,7 @@ global G_STATE := {
 global TransGui := ""
 global TransSourceCtrl := ""
 global TransBodyCtrl := ""
-global LOG_PATH := A_ScriptDir "\FlipText.log"
+global LOG_PATH := UserLogPath()
 global CONFIG_SUMMARY := ""
 global CONFIG_LAST_MTIME := ""
 global BOUND_HOTKEYS := []
@@ -134,7 +134,13 @@ ExecuteBehaviorBinding(shortcut) {
         UpdateTransGui(G_STATE.Result)
     } catch as err {
         LogDebug("Behavior error. " err.Message)
-        UpdateTransGui("Behavior Error")
+        errorText := Trim(err.Message)
+        if (errorText = "")
+            errorText := "Unknown error."
+        if (StrLen(errorText) > 180)
+            errorText := SubStr(errorText, 1, 177) "..."
+        errorTitle := (behavior.type = "llm_prompt") ? "LLM Error" : "Behavior Error"
+        UpdateTransGui(errorTitle ": " errorText)
         SetTimer(ClearUI, -2000)
     }
 }
@@ -296,7 +302,7 @@ PythonRunBehavior(text, profileId, promptId) {
         . " --text-file " QuoteArg(inputPath)
         . " --result-file " QuoteArg(outputPath)
         . " --log-file " QuoteArg(LOG_PATH)
-    exitCode := RunPythonWait("llm_translate.py", args)
+    exitCode := RunHelperWait("translate", "llm_translate.py", args)
 
     if !FileExist(outputPath)
         throw Error("Python translator did not produce output. Exit code " exitCode ".")
@@ -357,7 +363,7 @@ WatchConfigChanges() {
 }
 
 OpenSettings(*) {
-    LaunchPython("settings_app.py", "")
+    LaunchHelper("settings", "settings_app.py", "")
 }
 
 LoadConfigSummary() {
@@ -369,7 +375,7 @@ LoadConfigSummary() {
     try FileDelete(resultPath)
 
     try {
-        exitCode := RunPythonWait("config_cli.py", "summary --result-file " QuoteArg(resultPath))
+        exitCode := RunHelperWait("config", "config_cli.py", "summary --result-file " QuoteArg(resultPath))
     } catch as err {
         LogDebug("Failed to run config summary command. " err.Message)
         return DefaultSummary()
@@ -389,10 +395,18 @@ LoadConfigSummary() {
 }
 
 UserConfigPath() {
+    return UserDataDir() "\config.json"
+}
+
+UserLogPath() {
+    return UserDataDir() "\FlipText.log"
+}
+
+UserDataDir() {
     appData := EnvGet("APPDATA")
     if (appData = "")
         throw Error("APPDATA is not available.")
-    return appData "\FlipText\config.json"
+    return appData "\FlipText"
 }
 
 DefaultSummary() {
@@ -617,12 +631,40 @@ ToDisplayShortcut(shortcut) {
 }
 
 RunConfigCli(command, args) {
-    exitCode := RunPythonWait("config_cli.py", command " " args)
+    exitCode := RunHelperWait("config", "config_cli.py", command " " args)
     if (exitCode != 0)
         throw Error("Config command failed: " command)
 }
 
-RunPythonWait(scriptName, args) {
+RunHelperWait(helperCommand, scriptName, args) {
+    helperPath := HelperExePath()
+    if (helperPath != "") {
+        cmd := QuoteArg(helperPath) " " helperCommand
+        if (args != "")
+            cmd .= " " args
+        return RunWait(cmd, A_ScriptDir, "Hide")
+    }
+    return RunPythonScriptWait(scriptName, args)
+}
+
+LaunchHelper(helperCommand, scriptName, args) {
+    helperPath := HelperExePath()
+    if (helperPath != "") {
+        cmd := QuoteArg(helperPath) " " helperCommand
+        if (args != "")
+            cmd .= " " args
+        Run cmd, A_ScriptDir, "Hide"
+        return
+    }
+    LaunchPythonScript(scriptName, args)
+}
+
+HelperExePath() {
+    helperPath := A_ScriptDir "\helpers\FlipTextHelper.exe"
+    return FileExist(helperPath) ? helperPath : ""
+}
+
+RunPythonScriptWait(scriptName, args) {
     pythonPath := PythonExePath()
     scriptPath := A_ScriptDir "\" scriptName
     cmd := QuoteArg(pythonPath) " " QuoteArg(scriptPath)
@@ -631,7 +673,7 @@ RunPythonWait(scriptName, args) {
     return RunWait(cmd, A_ScriptDir, "Hide")
 }
 
-LaunchPython(scriptName, args) {
+LaunchPythonScript(scriptName, args) {
     pythonPath := PythonGuiExePath()
     scriptPath := A_ScriptDir "\" scriptName
     cmd := QuoteArg(pythonPath) " " QuoteArg(scriptPath)
@@ -689,7 +731,12 @@ EdgeTranslate(text) {
 
 LogDebug(message) {
     timestamp := FormatTime(, "yyyy-MM-dd HH:mm:ss")
-    FileAppend(timestamp " " message "`n", LOG_PATH, "UTF-8")
+    try {
+        logDir := UserDataDir()
+        if !DirExist(logDir)
+            DirCreate(logDir)
+        FileAppend(timestamp " " message "`n", LOG_PATH, "UTF-8")
+    }
 }
 
 FormatSeconds(ms) {

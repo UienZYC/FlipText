@@ -26,6 +26,7 @@ class SettingsApp:
         self.current_behavior_id = ""
         self.show_key = False
         self.dirty = False
+        self._suspend_dirty_tracking = False
 
         self.root = tk.Tk()
         self.root.title("FlipText Settings")
@@ -48,6 +49,7 @@ class SettingsApp:
         self.behavior_shortcut_var = tk.StringVar()
 
         self._build_ui()
+        self._bind_dirty_tracking()
         self._refresh_all()
 
     def _build_ui(self) -> None:
@@ -159,9 +161,11 @@ class SettingsApp:
         ttk.Label(right, text="System prompt").grid(row=1, column=0, sticky="nw")
         self.prompt_system_text = tk.Text(right, height=10, wrap="word")
         self.prompt_system_text.grid(row=2, column=0, columnspan=2, sticky="nsew")
+        self.prompt_system_text.bind("<<Modified>>", self._on_text_modified)
         ttk.Label(right, text="User prompt").grid(row=3, column=0, sticky="nw", pady=(8, 0))
         self.prompt_user_text = tk.Text(right, height=10, wrap="word")
         self.prompt_user_text.grid(row=4, column=0, columnspan=2, sticky="nsew")
+        self.prompt_user_text.bind("<<Modified>>", self._on_text_modified)
         ttk.Label(
             right,
             text=(
@@ -319,6 +323,7 @@ class SettingsApp:
     def _set_text(self, widget: tk.Text, value: str) -> None:
         widget.delete("1.0", tk.END)
         widget.insert("1.0", value)
+        widget.edit_modified(False)
 
     def _text_value(self, widget: tk.Text) -> str:
         return widget.get("1.0", tk.END).strip()
@@ -328,10 +333,15 @@ class SettingsApp:
         entry.configure(show="" if self.show_key else "*")
 
     def _refresh_all(self) -> None:
-        self._refresh_tree()
-        self._refresh_prompt_list()
-        self._refresh_behavior_list()
-        self._refresh_behavior_combo_options()
+        was_suspended = self._suspend_dirty_tracking
+        self._suspend_dirty_tracking = True
+        try:
+            self._refresh_tree()
+            self._refresh_prompt_list()
+            self._refresh_behavior_list()
+            self._refresh_behavior_combo_options()
+        finally:
+            self._suspend_dirty_tracking = was_suspended
 
     def _refresh_tree(self) -> None:
         self.tree.delete(*self.tree.get_children())
@@ -507,6 +517,37 @@ class SettingsApp:
         self.dirty = True
         self.status_var.set(f"{message} Config: {self.config_path}")
 
+    def _mark_dirty_from_edit(self, *_args: object) -> None:
+        if self._suspend_dirty_tracking:
+            return
+        if not self.dirty:
+            self._mark_dirty("Unsaved changes.")
+
+    def _bind_dirty_tracking(self) -> None:
+        tracked_vars = [
+            self.provider_name_var,
+            self.base_url_var,
+            self.api_key_var,
+            self.model_name_var,
+            self.model_enabled_var,
+            self.timeout_var,
+            self.prompt_name_var,
+            self.behavior_name_var,
+            self.behavior_type_var,
+            self.behavior_profile_var,
+            self.behavior_prompt_var,
+            self.behavior_shortcut_var,
+        ]
+        for var in tracked_vars:
+            var.trace_add("write", self._mark_dirty_from_edit)
+
+    def _on_text_modified(self, event: tk.Event) -> None:
+        widget = event.widget
+        if not isinstance(widget, tk.Text) or not widget.edit_modified():
+            return
+        widget.edit_modified(False)
+        self._mark_dirty_from_edit()
+
     def _on_tree_selected(self) -> None:
         selection = self.tree.selection()
         if not selection:
@@ -516,7 +557,12 @@ class SettingsApp:
                 self.tree.selection_set(self.current_model_selection)
             return
         self.current_model_selection = selection[0]
-        self._load_model_selection()
+        was_suspended = self._suspend_dirty_tracking
+        self._suspend_dirty_tracking = True
+        try:
+            self._load_model_selection()
+        finally:
+            self._suspend_dirty_tracking = was_suspended
 
     def _on_prompt_selected(self) -> None:
         selection = self.prompt_list.curselection()
@@ -527,7 +573,12 @@ class SettingsApp:
             self._refresh_prompt_list()
             return
         self.current_prompt_id = new_id
-        self._load_prompt_selection()
+        was_suspended = self._suspend_dirty_tracking
+        self._suspend_dirty_tracking = True
+        try:
+            self._load_prompt_selection()
+        finally:
+            self._suspend_dirty_tracking = was_suspended
 
     def _on_behavior_selected(self) -> None:
         selection = self.behavior_tree.selection()
@@ -538,7 +589,12 @@ class SettingsApp:
             self._refresh_behavior_list()
             return
         self.current_behavior_id = new_id
-        self._load_behavior_selection()
+        was_suspended = self._suspend_dirty_tracking
+        self._suspend_dirty_tracking = True
+        try:
+            self._load_behavior_selection()
+        finally:
+            self._suspend_dirty_tracking = was_suspended
 
     def _on_behavior_tree_click(self, event: tk.Event) -> None:
         row_id = self.behavior_tree.identify_row(event.y)
@@ -551,7 +607,12 @@ class SettingsApp:
         self.current_behavior_id = row_id
         self.behavior_tree.selection_set(row_id)
         self.behavior_tree.focus(row_id)
-        self._load_behavior_selection()
+        was_suspended = self._suspend_dirty_tracking
+        self._suspend_dirty_tracking = True
+        try:
+            self._load_behavior_selection()
+        finally:
+            self._suspend_dirty_tracking = was_suspended
         self.behavior_shortcut_entry.focus_set()
         self.behavior_shortcut_entry.selection_range(0, tk.END)
 
